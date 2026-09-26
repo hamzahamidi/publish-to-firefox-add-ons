@@ -557,8 +557,19 @@ describe('publishToAmo: site status', () => {
     assert.deepEqual(run.slept, [5000, 5000]);
     assert.equal(run.lines.filter((line) => line.endsWith('Trying again in 5 s.')).length, 2);
     amo.reset();
-    amo.fault('site', { notJson: true });
-    assert.match((await rejection(publish('1.4.0'))).message, /returned a response that is not JSON: <html>/);
+    amo.fault('site', { notJson: true }, { notJson: true }, { notJson: true });
+    const html = publish('1.4.0');
+    assert.match((await rejection(html)).message, /returned a response that is not JSON: <html>/);
+    assert.equal(count(SITE), 3);
+    assert.deepEqual(html.slept, [5000, 5000]);
+  });
+
+  it('reads the add-on again after an answer that is not JSON, and continues', async () => {
+    amo.fault('addon', { notJson: true });
+    const run = publish('1.4.0');
+    assert.equal((await run).result, 'submitted');
+    assert.deepEqual(calls().slice(0, 4), [SITE, ADDON, ADDON, AUTHOR]);
+    assert.ok(run.lines.includes(`${ADDON} returned a response that is not JSON: <html><body>Bad gateway</body></html> Trying again in 5 s.`));
   });
 });
 

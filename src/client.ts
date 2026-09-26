@@ -149,12 +149,16 @@ export function amoClient({
     });
   }
 
-  function parsed(request: Request, reply: Reply): Record<string, unknown> {
-    if (isObject(reply.body)) return reply.body;
-    throw new AmoError(`${label(request)} returned a response that is not JSON: ${reply.text.slice(0, 2000)}`, request.method === 'GET' ? undefined : RERUN_HINT, {
+  function notJson(request: Request, reply: Reply): AmoError {
+    return new AmoError(`${label(request)} returned a response that is not JSON: ${reply.text.slice(0, 2000)}`, request.method === 'GET' ? undefined : RERUN_HINT, {
       status: reply.status,
       ambiguous: request.method !== 'GET',
     });
+  }
+
+  function parsed(request: Request, reply: Reply): Record<string, unknown> {
+    if (isObject(reply.body)) return reply.body;
+    throw notJson(request, reply);
   }
 
   async function readBody(response: Response): Promise<Buffer> {
@@ -247,8 +251,9 @@ export function amoClient({
             await sleep(throttleWait(request, reply));
             continue;
           }
-          if (!RETRYABLE_STATUSES.has(reply.status)) return reply;
-          problem = failure(request, reply);
+          if (RETRYABLE_STATUSES.has(reply.status)) problem = failure(request, reply);
+          else if (!request.binary && reply.status >= 200 && reply.status < 300 && !isObject(reply.body)) problem = notJson(request, reply);
+          else return reply;
         } catch (error) {
           if (!(error instanceof AmoError) || !error.retryable) throw error;
           problem = error;

@@ -200,6 +200,25 @@ describe('amoClient', () => {
     assert.equal(closed.slept.length, 2);
   });
 
+  it('retries a read whose answer is not a JSON object, then stops quoting it', async () => {
+    server.on('GET /edge/', { body: '<html>Bad gateway</html>' }, { body: { ok: 1 } });
+    const amo = client();
+    assert.deepEqual((await amo.read(get('/edge/'))).body, { ok: 1 });
+    assert.deepEqual(amo.slept, [5000]);
+    assert.equal(amo.lines[0], 'GET /edge/ returned a response that is not JSON: <html>Bad gateway</html> Trying again in 5 s.');
+    server.on('GET /html/', { body: `<html>${'x'.repeat(3000)}</html>` });
+    const error = await rejection(amo.read(get('/html/')));
+    assert.equal(error.message, `GET /html/ returned a response that is not JSON: <html>${'x'.repeat(1994)}`);
+    assert.equal(error.ambiguous, false);
+    assert.equal(server.requests.filter((request) => request.key === 'GET /html/').length, 3);
+    server.on('GET /list/', { body: [] });
+    await rejection(amo.read(get('/list/')));
+    server.on('GET /file.xpi', { body: 'PK binary' });
+    assert.equal((await amo.read({ method: 'GET', path: '/file.xpi', file: true, binary: true })).bytes.toString(), 'PK binary');
+    server.on('GET /missing/', { status: 404, body: '<html>Not found</html>' });
+    assert.equal((await amo.read(get('/missing/'))).status, 404);
+  });
+
   it('returns other statuses from a read without retrying', async () => {
     server.on('GET /gone/', { status: 404, body: { detail: 'Not found.' } });
     assert.equal((await client().read(get('/gone/'))).status, 404);
