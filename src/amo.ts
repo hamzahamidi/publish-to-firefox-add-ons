@@ -79,6 +79,7 @@ const UPLOAD_PATH = '/api/v5/addons/upload/';
 const POLL_FAILURES = new Set([429, 500, 502, 503, 504]);
 const UUID = /^[0-9a-f]{32}$/;
 const RERUN_SAFE = 'Re-running is safe: the action looks the version up first.';
+const UPLOADED = 'The package was uploaded to AMO, but no version was created.';
 const UPDATE_ONLY_HINT = 'AMO has no add-on with this ID that this account can see. The action updates existing add-ons only; create the listing in the Developer Hub first.';
 const METADATA_HINT = 'A listed version needs a license, name, summary and categories on the add-on. Set them in the Developer Hub; this action does not edit the listing.';
 const KEY_REVOKED_HINT =
@@ -206,14 +207,17 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
     state = found.fileStatus;
     output('state', state);
     output('version-id', String(found.id));
-    if (found.editUrl && safeUrl(found.editUrl)) output('edit-url', found.editUrl);
+    const editUrl = checkedUrl(found.editUrl);
+    if (editUrl) output('edit-url', editUrl);
   }
 
-  function safeUrl(url: string): boolean {
+  function checkedUrl(raw: string | undefined): string | undefined {
+    if (!raw) return undefined;
     try {
-      return new URL(url).origin === new URL(apiBase).origin;
+      const parsed = new URL(raw);
+      return parsed.origin === new URL(apiBase).origin && parsed.href === raw ? parsed.href : undefined;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -297,6 +301,7 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       try {
         const reply = await client.write(request);
         if (reply.status === 201 && isObject(reply.body)) {
+          sent = UPLOADED;
           const created = decodeUpload(reply.body, where('POST', UPLOAD_PATH));
           if (created.channel !== channel) throw unknownState(where('POST', UPLOAD_PATH), 'channel', created.channel);
           return created;
@@ -401,6 +406,7 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       throw error;
     }
     if (reply.status === 201) {
+      sent = `Version ${version} was created on AMO.`;
       if (!isObject(reply.body) || !Number.isSafeInteger(reply.body.id)) return { trigger: 'lost', reason: `POST ${createPath} returned HTTP 201 without a readable version` };
       const created = decodeVersion(reply.body, where('POST', createPath));
       if (created.version !== version) throw unknownState(where('POST', createPath), 'version', created.version);
@@ -491,8 +497,9 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       log(`AMO has no version ${version} and upload ${uuid} is unused, so the create is sent once more.`);
       outcome = await sendCreate(uuid);
     }
-    const carried = [source && 'the source ZIP', releaseNotes && !source && 'release notes', approvalNotes && 'approval notes'].filter(Boolean);
-    log(`Created version ${version} (id ${outcome.created.id}) in the ${channel} channel${carried.length > 0 ? `, with ${carried.join(' and ')}` : ''}. File status: ${outcome.created.fileStatus}.`);
+    const stored = outcome.created;
+    const carried = [typeof stored.source === 'string' && 'the source ZIP', normalized(stored.releaseNotes) && 'release notes', normalized(stored.approvalNotes) && 'approval notes'].filter(Boolean);
+    log(`Created version ${version} (id ${stored.id}) in the ${channel} channel${carried.length > 0 ? `, with ${carried.join(' and ')}` : ''}. File status: ${stored.fileStatus}.`);
     return { found: outcome.created, ours: true };
   }
 
@@ -653,7 +660,7 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       return { result: 'dry-run', state: '' };
     }
     const uploaded = await upload(snapshot);
-    sent = 'The package was uploaded to AMO, but no version was created.';
+    sent = UPLOADED;
     log(`Uploaded ${zipName} (${Math.max(1, Math.round(zip.length / 1024))} KB) to the ${channel} channel. AMO is validating it.`);
     const validated = await validate(uploaded);
     checkValidation(validated);
@@ -672,7 +679,8 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
     if (dryRun) log(`Dry run: a real run would wait up to ${waitTimeoutMinutes} minutes for AMO to sign version ${version}.`);
     else current = await waitForSigning(current);
   } else if (listed && current.fileStatus === 'unreviewed') {
-    log(`${LISTED_REVIEW_NOTE}${current.editUrl && safeUrl(current.editUrl) ? ` Developer Hub: ${current.editUrl}` : ''}`);
+    const editUrl = checkedUrl(current.editUrl);
+    log(`${LISTED_REVIEW_NOTE}${editUrl ? ` Developer Hub: ${editUrl}` : ''}`);
   }
   if (signedXpi && current.fileStatus === 'public') {
     if (dryRun) log(`Dry run: a real run would download the signed file to ${signedXpi}.`);
