@@ -1,5 +1,5 @@
 name: Publish to Firefox Add-ons
-description: Publish a new version of an existing Firefox add-on to addons.mozilla.org, listed or unlisted, with safe re-runs and no runtime dependencies.
+description: Publish new versions of an existing Firefox add-on to addons.mozilla.org, listed or unlisted, with safe re-runs.
 author: Hamza Hamidi
 
 branding:

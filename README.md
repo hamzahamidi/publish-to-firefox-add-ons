@@ -56,7 +56,7 @@ AMO offers one kind of API credential: an API key (the JWT issuer, such as `user
 - **It belongs to a Mozilla account, not to an add-on.** It works on every add-on that account authors, with everything the account's author role allows. It cannot be scoped to one add-on.
 - **It never expires.** AMO has no OIDC federation, no trusted publishing and no short-lived or scoped key, so this action needs the key and the secret stored as GitHub secrets. The Chrome action can avoid a stored secret through Workload Identity Federation; Firefox has no such route.
 - **Rotation has no overlap window.** An account has one active key. Generating a new one revokes the old one in the same step, so publishing fails until both secrets hold the new pair. AMO allows at most 4 key changes per account per day.
-- **AMO revokes a key it finds in an upload.** Every uploaded package is scanned for the API secrets of the add-on's authors. This action scans the package and the source ZIP first and refuses to upload either when it contains the key or the secret.
+- **AMO revokes a key it finds in an upload.** Every uploaded package is scanned for the API secrets of the add-on's authors. This action scans the package and the source ZIP first and refuses to upload either when it contains the key or the secret. It searches the raw archive, the bytes of every entry, and every entry decoded as UTF-8 with invalid bytes dropped, which is how AMO reads an entry before its own search.
 
 Recommended setup:
 
@@ -77,7 +77,7 @@ To rotate, generate a new pair on the API Credentials page, then update both sec
 ## Before you start
 
 - The add-on must already exist on AMO. The action adds versions to it and never creates an add-on; submit the first version in the Developer Hub.
-- `manifest.json` must have `browser_specific_settings.gecko.id`, equal to `addon-id` letter for letter. The action refuses a package without it, because AMO attaches a package without an ID to whatever add-on the request names. Manifest V3 requires the ID for signing; for Manifest V2, adding the ID the add-on already has changes nothing on AMO.
+- `manifest.json` must have `browser_specific_settings.gecko.id`, equal to `addon-id` letter for letter. The action refuses a package with no Gecko ID (`applications.gecko.id` is also read when `browser_specific_settings` is absent, as AMO does), because AMO attaches a package without an ID to whatever add-on the request names. Manifest V3 requires the ID for signing; for Manifest V2, adding the ID the add-on already has changes nothing on AMO.
 - A listed version needs a name, summary, categories and license on the add-on. Set them in the Developer Hub; the action does not edit the listing.
 - Every release needs a new version number. AMO accepts each number once per add-on, across both channels and forever, deleted versions included. A listed version must also be greater than the latest signed listed version.
 - A new listed version disables older listed versions that are still awaiting review.
@@ -204,11 +204,13 @@ When signing takes longer than `wait-timeout`, the run fails with `state` set to
 
 The source ZIP and the approval notes go in the same request that creates the version. AMO does not accept release notes in that request, so they follow in a second one. On a re-run, the action sends only what the version still lacks and never replaces a value that is there, so an edit made in the Developer Hub stays.
 
+`github.event.release.body` is set only when the workflow runs `on: release: types: [published]`. With the tag push of the other examples it is empty and no release notes are sent, so pass the notes another way, such as a file written by the build job.
+
 Passing `github.event.release.body` through `with:` is safe. Do not place it inside a `run:` script, where it would run as shell code.
 
 ### Trying it first
 
-Add `dry-run: true` to the step. The run checks the inputs and the package, scans for the credentials, reads the site status, the add-on, the author role, the version and the upload list, then prints what a real run would send. It sends no POST or PATCH request, so it proves that the credentials work and that the account is an author of the add-on without uploading anything. To start a dry run by hand, give the workflow a `workflow_dispatch` trigger.
+Add `dry-run: true` to the step. The run checks the inputs and the package, scans for the credentials, reads the site status, the add-on, the author role, the version and the upload list, then prints what a real run would send. It sends no POST or PATCH request, so it proves that the credentials work and that the account is an author of the add-on without uploading anything. To start a dry run by hand, give the workflow a `workflow_dispatch` trigger and pick a release tag under "Use workflow from", because the environment admits only tag runs.
 
 ### Next to the Chrome action
 
@@ -445,14 +447,15 @@ All requests go to `https://addons.mozilla.org`. `{addon-id}` is percent-encoded
 | 8 | Valid upload | `POST /api/v5/addons/addon/{id}/versions/`: JSON with `upload` and the notes, or with `source` given, multipart with `upload`, `source` and `approval_notes` | 90 s, or 300 s with `source` |
 | 9 | Notes the version lacks | `PATCH /api/v5/addons/addon/{id}/versions/{version id}/` with JSON `release_notes` and `approval_notes`, only the missing ones | 90 s |
 | 10 | Existing `unreviewed` version without source, `source` given | `PATCH .../versions/{version id}/`, multipart with `source`, and `approval_notes` when missing | 300 s |
-| 11 | Upload answer lost | The upload list again, then at most one more upload | 90 s |
-| 12 | Create answer lost | `GET /api/v5/addons/upload/{uuid}/` and request 4 again, then at most one more create | 90 s |
-| 13 | `wait` or `signed-xpi`, version `unreviewed` | `GET .../versions/{version id}/` every 15 seconds, up to `wait-timeout` | 90 s |
-| 14 | `signed-xpi`, version `public` | `GET` the file URL AMO reports, only when it is on `https://addons.mozilla.org` | 300 s |
+| 11 | Upload answer lost | The upload list again, then at most one more upload | 90 s for the list, 300 s for the repeated upload (as row 6) |
+| 12 | Create answer lost | `GET /api/v5/addons/upload/{uuid}/` and request 4 again, then at most one more create | 90 s for the reads; the repeated create as row 8 |
+| 13 | PATCH answer lost | `GET /api/v5/addons/addon/{id}/versions/{version id}/`, then at most one more PATCH, only when the field is still missing | 90 s, or 300 s for the source PATCH |
+| 14 | `wait` or `signed-xpi`, version `unreviewed` | `GET .../versions/{version id}/` every 15 seconds, up to `wait-timeout` | 90 s |
+| 15 | `signed-xpi`, version `public` | `GET` the file URL AMO reports, only when it is on `https://addons.mozilla.org` | 300 s |
 
 The action never calls `PUT /api/v5/addons/addon/{guid}/`, `POST /api/v5/addons/addon/`, any `DELETE`, the rollback endpoint or the frozen v4 signing API.
 
-The host is fixed in the code. There is no input to change it, redirects are refused rather than followed, and the test setting described under [Development](#development) accepts only loopback addresses. `addon-id` is checked against the Gecko ID formats before it enters a URL, and the upload `uuid` and version id AMO returns are validated before use. Reads retry twice, 5 seconds apart, after a network error or HTTP 500, 502, 503 or 504. Writes are never retried blindly: after an unclear answer the action reads AMO's state first. Each request has a timeout: 60 seconds for a read, 120 seconds for a JSON write, 10 minutes for a request that carries a file and for the download.
+The host is fixed in the code. There is no input to change it, redirects are refused rather than followed, and the test setting described under [Development](#development) accepts only loopback addresses. `addon-id` is checked against the Gecko ID formats before it enters a URL, and the upload `uuid` and version id AMO returns are validated before use. Reads retry twice, 5 seconds apart, after a network error, HTTP 500, 502, 503 or 504, or an answer that is not JSON. Writes are never retried blindly: after an unclear answer the action reads AMO's state first. Each request has a timeout: 60 seconds for a read, 120 seconds for a JSON write, 10 minutes for a request that carries a file and for the download.
 
 ### Tokens
 
@@ -474,11 +477,11 @@ Each authenticated request carries a new HS256 JWT signed with `api-secret`: `is
 | [`src/amo.ts`](src/amo.ts) | ~690 | The request sequence and its decisions: preflight, upload, create and its resolution, completion, wait |
 | [`src/client.ts`](src/client.ts) | ~280 | One request function: a token per request, headers, timeouts, redirect refusal, `Retry-After`, error text and hints |
 | [`src/decode.ts`](src/decode.ts) | ~230 | Checks every field the action reads from AMO and stops on values it does not know |
-| [`src/zip.ts`](src/zip.ts) | ~140 | Reads the ZIP with checksum verification and AMO's archive limits |
+| [`src/zip.ts`](src/zip.ts) | ~150 | Reads the ZIP with checksum verification and AMO's archive limits |
 | [`src/manifest.ts`](src/manifest.ts) | ~100 | Reads `manifest.json` as AMO does, and the Gecko ID and version rules |
 | [`src/download.ts`](src/download.ts) | ~70 | Downloads and verifies the signed file, then moves it into place |
 | [`src/runner.ts`](src/runner.ts) | ~50 | GitHub Actions inputs, outputs, masking and annotations |
-| [`src/scan.ts`](src/scan.ts) | ~30 | Searches the raw archive and every entry for the key and the secret |
+| [`src/scan.ts`](src/scan.ts) | ~35 | Searches the raw archive, every entry and its decoded text for the key and the secret |
 | [`src/jwt.ts`](src/jwt.ts) | ~30 | Signs the HS256 token and computes the clock offset |
 | [`src/errors.ts`](src/errors.ts) | ~20 | The error type for failures shown as an error annotation, and network error wording |
 
@@ -505,6 +508,8 @@ AMO throttles writes per account: uploads at 6 per minute, 20 per hour and 48 pe
 | New version with `source` | 1 | 1, or 2 with release notes, which need their own request. Approval notes also take a second one if AMO does not keep them from the request that carries the source, which is not verified |
 | Re-run, nothing missing | 0 | 0 |
 | Re-run, notes missing | 0 | 1 |
+| Re-run, unreviewed version missing source and release notes | 0 | 2 |
+| Upload answer lost, not adopted | 2 | as above |
 | Dry run | 0 | 0 |
 
 On HTTP 429, the action waits for `Retry-After` when it is 120 seconds or less, at most twice per run. A longer wait means an hourly or daily bucket is empty, and the run stops with the limits above.
@@ -520,13 +525,13 @@ What this action does not do:
 - It downloads the signed file of unlisted versions only. addons.mozilla.org distributes listed ones.
 - It never reuses an upload from an earlier run. AMO's upload list has no hash, no add-on and no order, and AMO repacks every upload, so the action cannot prove that an old upload holds this build, and a wrong guess would burn the version number. A run interrupted between upload and create costs one extra upload.
 - It does not add source code to a version Mozilla has approved.
-- It refuses a manifest without a Gecko ID, ZIP64 archives, encrypted entries and compression methods other than stored and deflated. It does not open archives nested inside the package when scanning for the credentials, as AMO's own scan does not.
+- It refuses a manifest without a Gecko ID, ZIP64 archives, an archive whose end record disagrees with its central directory, encrypted entries and compression methods other than stored and deflated. It does not open archives nested inside the package when scanning for the credentials, as AMO's own scan does not.
 
 What AMO imposes on any publishing tool:
 
 - One kind of credential: an account-wide key and secret that never expire. See [The credential](#the-credential).
 - A version number can be used once per add-on, across channels and after deletion, and a listed version must be greater than the latest signed listed one.
-- Packages and source archives up to 200,000,000 bytes, at most 250 MiB once uncompressed and 100 MiB per entry, with stored or deflated entries only.
+- Packages and source archives up to 200,000,000 bytes, less than 250 MiB once uncompressed and at most 100 MiB per entry, with stored or deflated entries only.
 - A token lives at most 5 minutes. If AMO checks it only once a whole upload has arrived, which is not verified, a 200 MB package needs about 6 Mbit/s of upload bandwidth.
 - Mozilla reviews listed versions, and signing can take 24 hours or longer. Any version, unlisted ones included, can be reviewed later and disabled.
 - The rate limits above, shared by everything that uses the account.

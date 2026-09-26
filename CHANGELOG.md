@@ -10,5 +10,5 @@ First release.
 - Uploads the source ZIP with the version, sets release notes (`en-US`) and approval notes, and fills only fields that are missing on a re-run.
 - Waits for signing on request, and downloads and verifies the signed file of an unlisted version.
 - `dry-run: true` runs the local checks and every read, and reports the requests a real run would send.
-- Signs a JWT for each request, masks the API key, the API secret and every token, and sends them only to addons.mozilla.org, refusing redirects.
+- Signs a JWT for each authenticated request, masks the API key, the API secret and every token, and sends them only to addons.mozilla.org, refusing redirects.
 - Written in TypeScript that Node 24 runs directly, with no bundle and no runtime dependencies.

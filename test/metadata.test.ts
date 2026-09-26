@@ -51,6 +51,11 @@ describe('action metadata', () => {
     });
   }
 
+  it('keeps the action description under the 125 characters the Marketplace accepts', () => {
+    const description = /^description: (.*)$/m.exec(readFileSync('action.yml', 'utf8'))?.[1] ?? '';
+    assert.ok(description.length > 0 && description.length < 125, `${description.length} characters`);
+  });
+
   it('gives wait-timeout no default, so the action can tell an omitted value from a set one', () => {
     const inputs = parseKeys('action.yml').children.get('inputs')!.children;
     assert.equal(inputs.get('wait-timeout')!.children.has('default'), false);
