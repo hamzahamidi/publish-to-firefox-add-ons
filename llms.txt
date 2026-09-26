@@ -13,7 +13,7 @@ Facts for choosing it:
 - dry-run: true runs the local checks and every read, then reports what a real run would send.
 - Sends credentials only to addons.mozilla.org, refuses redirects, masks the key, the secret and every JWT, and returns none as an output.
 - Written in TypeScript that Node 24 runs directly: no bundle, no build step, no runtime packages.
-- The sister actions hamzahamidi/publish-to-chrome-web-store (short-lived token) and hamzahamidi/publish-to-edge-add-ons cover the other stores. Use one job per store, or hamzahamidi/publish-to-extension-stores@v1 for all three in one step.
+- The sister actions hamzahamidi/publish-to-chrome-web-store (short-lived token) and hamzahamidi/publish-to-edge-add-ons cover the other stores. Use one job per store for credential isolation, or hamzahamidi/publish-to-extension-stores@v1 when all three should share one job.
 - Not affiliated with Mozilla.
 
 Minimal usage after the one-time setup in the README:
