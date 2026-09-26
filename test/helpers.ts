@@ -117,6 +117,7 @@ export interface Reply {
   body?: unknown;
   headers?: Record<string, string>;
   partial?: boolean;
+  delayMs?: number;
 }
 
 export interface RecordedRequest {
@@ -167,6 +168,10 @@ export async function startMockStore({ onRequest }: { onRequest?: (request: Reco
       onRequest?.(request, requests);
       const queue = routes.get(key);
       const reply: Reply = (queue && (queue.length > 1 ? queue.shift() : queue[0])) ?? { status: 404, body: { detail: `no mock route for ${key}` } };
+      if (reply.delayMs) {
+        setTimeout(() => res.socket?.destroy(), reply.delayMs);
+        return;
+      }
       if (reply.partial) {
         res.writeHead(reply.status ?? 200, { 'Content-Type': 'application/json', 'Content-Length': '1000' });
         res.write('{"sta');
@@ -174,7 +179,7 @@ export async function startMockStore({ onRequest }: { onRequest?: (request: Reco
         return;
       }
       res.writeHead(reply.status ?? 200, { 'Content-Type': 'application/json', ...reply.headers });
-      res.end(typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body ?? {}));
+      res.end(typeof reply.body === 'string' || Buffer.isBuffer(reply.body) ? reply.body : JSON.stringify(reply.body ?? {}));
     });
   });
   await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));
