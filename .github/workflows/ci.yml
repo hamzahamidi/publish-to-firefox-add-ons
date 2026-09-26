@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - name: Upload coverage to Codecov
+        # Fork pull requests receive no id-token, so an OIDC upload from them can only fail.
+        if: matrix.os == 'ubuntu-latest' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          files: ./lcov.info
+          fail_ci_if_error: true
+
+  listed:
+    name: Action against a mock AMO, listed with source and notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Start the mock AMO
+        run: node test/self-test.ts start listed
+      - id: publish
+        uses: ./
+        with:
+          api-key: user:12345:67
+          api-secret: self-test-secret
+          addon-id: my-extension@example.com
+          zip: self-test.zip
+          channel: listed
+          source: self-test-source.zip
+          release-notes: Adds a settings page.
+          approval-notes: npm ci && npm run build
+      - name: Check the requests and outputs
+        env:
+          RESULT: ${{ steps.publish.outputs.result }}
+          STATE: ${{ steps.publish.outputs.state }}
+          VERSION: ${{ steps.publish.outputs.version }}
+          VERSION_ID: ${{ steps.publish.outputs.version-id }}
+          EDIT_URL: ${{ steps.publish.outputs.edit-url }}
+          SIGNED_XPI: ${{ steps.publish.outputs.signed-xpi }}
+        run: node test/self-test.ts verify listed
+
+  unlisted:
+    name: Action against a mock AMO, unlisted with the signed file
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Start the mock AMO
+        run: node test/self-test.ts start unlisted
+      - id: publish
+        uses: ./
+        with:
+          api-key: user:12345:67
+          api-secret: self-test-secret
+          addon-id: my-extension@example.com
+          zip: self-test.zip
+          channel: unlisted
+          signed-xpi: self-test-signed/my-extension.xpi
+      - name: Check the requests, outputs and signed file
+        env:
+          RESULT: ${{ steps.publish.outputs.result }}
+          STATE: ${{ steps.publish.outputs.state }}
+          VERSION: ${{ steps.publish.outputs.version }}
+          VERSION_ID: ${{ steps.publish.outputs.version-id }}
+          EDIT_URL: ${{ steps.publish.outputs.edit-url }}
+          SIGNED_XPI: ${{ steps.publish.outputs.signed-xpi }}
+        run: node test/self-test.ts verify unlisted
+
+  rerun:
+    name: Action re-run after a lost create answer
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: Start the mock AMO
+        run: node test/self-test.ts start rerun
+      - id: first
+        name: Run that loses the create answer and cannot read AMO's state
+        continue-on-error: true
+        uses: ./
+        with:
+          api-key: user:12345:67
+          api-secret: self-test-secret
+          addon-id: my-extension@example.com
+          zip: self-test.zip
+          channel: listed
+          source: self-test-source.zip
+          release-notes: Adds a settings page.
+          approval-notes: npm ci && npm run build
+      - name: Check that the first run failed before setting a result
+        env:
+          OUTCOME: ${{ steps.first.outcome }}
+          RESULT: ${{ steps.first.outputs.result }}
+          STATE: ${{ steps.first.outputs.state }}
+          VERSION: ${{ steps.first.outputs.version }}
+          VERSION_ID: ${{ steps.first.outputs.version-id }}
+          EDIT_URL: ${{ steps.first.outputs.edit-url }}
+          SIGNED_XPI: ${{ steps.first.outputs.signed-xpi }}
+        run: node test/self-test.ts verify rerun-1
+      - id: second
+        name: Re-run that completes the release notes
+        uses: ./
+        with:
+          api-key: user:12345:67
+          api-secret: self-test-secret
+          addon-id: my-extension@example.com
+          zip: self-test.zip
+          channel: listed
+          source: self-test-source.zip
+          release-notes: Adds a settings page.
+          approval-notes: npm ci && npm run build
+      - name: Check the second run
+        env:
+          RESULT: ${{ steps.second.outputs.result }}
+          STATE: ${{ steps.second.outputs.state }}
+          VERSION: ${{ steps.second.outputs.version }}
+          VERSION_ID: ${{ steps.second.outputs.version-id }}
+          EDIT_URL: ${{ steps.second.outputs.edit-url }}
+          SIGNED_XPI: ${{ steps.second.outputs.signed-xpi }}
+        run: node test/self-test.ts verify rerun-2
+      - id: third
+        name: Re-run with nothing left to do
+        uses: ./
+        with:
+          api-key: user:12345:67
+          api-secret: self-test-secret
+          addon-id: my-extension@example.com
+          zip: self-test.zip
+          channel: listed
+          source: self-test-source.zip
+          release-notes: Adds a settings page.
+          approval-notes: npm ci && npm run build
+      - name: Check the third run
+        env:
+          RESULT: ${{ steps.third.outputs.result }}
+          STATE: ${{ steps.third.outputs.state }}
+          VERSION: ${{ steps.third.outputs.version }}
+          VERSION_ID: ${{ steps.third.outputs.version-id }}
+          EDIT_URL: ${{ steps.third.outputs.edit-url }}
+          SIGNED_XPI: ${{ steps.third.outputs.signed-xpi }}
+        run: node test/self-test.ts verify rerun-3
