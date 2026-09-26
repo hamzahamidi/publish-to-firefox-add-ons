@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { after, afterEach, before, describe, it } from 'node:test';
-import { ACCOUNT, ADDON_ID, addonZip, API_KEY, API_SECRET, makeZip, sourceZip } from './helpers.ts';
+import { ACCOUNT, ADDON_ID, addonFiles, addonZip, API_KEY, API_SECRET, divergentZip, makeZip, sourceZip } from './helpers.ts';
 import { type MockAmo, startMockAmo } from './mock-amo.ts';
 
 const MAIN = resolve(import.meta.dirname, '../src/main.ts');
@@ -271,6 +271,11 @@ describe('action', () => {
     ['the key in the source ZIP', () => ({ source: file('leak-source.zip', sourceZip([{ name: '.env', data: `AMO_KEY=${API_KEY}` }])) }), /The API key appears in entry "\.env" of "[^"]*leak-source\.zip"/],
     ['a source ZIP with a broken CRC', () => ({ source: file('crc.zip', makeZip([{ name: 'a.ts', data: 'hello', crc: 7 }])) }), /Entry "a\.ts" of "[^"]*crc\.zip" fails its checksum\. The ZIP is damaged\./],
     ['a manifest in a folder', () => ({ zip: file('nested.zip', makeZip([{ name: 'dist/manifest.json', data: '{}' }])) }), /no manifest\.json at its root, only "dist\/manifest\.json"/],
+    ...(['low-count', 'zip64-locator', 'shifted-cd'] as const).map((kind): [string, () => Record<string, string>, RegExp] => [
+      `a ${kind} archive that hides an entry holding the secret`,
+      () => ({ zip: file(`${kind}.zip`, divergentZip(kind, addonFiles('1.0.0', { files: [{ name: 'dist/config.js', data: `const s = "${API_SECRET}";`.repeat(4) }] }))) }),
+      /::error::"[^"]*\.zip" is (not a valid ZIP file|a ZIP64 archive)/,
+    ]),
   ];
   for (const [label, override, pattern] of local) {
     it(`refuses ${label} with zero requests, without printing a credential`, async () => {
@@ -282,6 +287,17 @@ describe('action', () => {
       assert.equal(run.outputs.version, undefined);
     });
   }
+
+  it('scans a malformed manifest before parsing it, so no message quotes the secret', async () => {
+    const secret = `c${API_SECRET.slice(1)}`;
+    const manifest = `{"manifest_version": 3, "name": "x", "version": "1.0.0", "api_secret": ${secret}}`;
+    const run = await runAction(baseInputs('1.0.0', { 'api-secret': secret, zip: file('echo.zip', makeZip([{ name: 'manifest.json', data: manifest }])) }));
+    assert.equal(run.code, 1, run.stdout);
+    assert.match(run.stdout, /::error::The API secret appears in entry "manifest\.json" of "[^"]*echo\.zip"\./);
+    const plain = withoutMaskLines(run.stdout);
+    for (let i = 0; i + 10 <= secret.length; i++) assert.ok(!plain.includes(secret.slice(i, i + 10)), `the log holds ${secret.slice(i, i + 10)}`);
+    assert.equal(amo.requests.length, 0);
+  });
 
   it('refuses a package larger than AMO accepts without reading it', { skip: process.platform === 'win32' && 'sparse files' }, async () => {
     const zip = file('huge.zip', Buffer.alloc(0));

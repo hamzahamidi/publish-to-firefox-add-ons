@@ -40,6 +40,17 @@ describe('scanArchive', () => {
     fails(scan([{ name: 'k.txt', data: API_KEY }]), /API key appears in entry "k\.txt"/);
   });
 
+  it('finds a secret broken by invalid UTF-8 bytes, which AMO drops before it searches', () => {
+    const split = (gap: number[]) => Buffer.concat([Buffer.from(API_SECRET.slice(0, 20)), Buffer.from(gap), Buffer.from(API_SECRET.slice(20))]);
+    fails(scan([{ name: 'dist/data.bin', data: split([0xff]) }]), /API secret appears in entry "dist\/data\.bin"/);
+    fails(scan([{ name: 'dist/data.bin', data: split([0xe2, 0x82]), method: 0 }]), /API secret appears in entry "dist\/data\.bin"/);
+    fails(scan([{ name: 'k.bin', data: Buffer.concat([Buffer.from('user:12345'), Buffer.from([0xc3]), Buffer.from(':67')]) }]), /API key appears in entry "k\.bin"/);
+  });
+
+  it('does not refuse text with valid non-ASCII characters next to part of the secret', () => {
+    assert.equal(scan([{ name: 'i18n.js', data: `const s = "héllo 日本 ${API_SECRET.slice(0, 40)}";` }])(), 1);
+  });
+
   it('names the source ZIP when the secret is in it', () => {
     fails(scan([{ name: 'src/.env', data: `AMO_SECRET=${API_SECRET}` }], {}, '"source.zip"'), /entry "src\/\.env" of "source\.zip"/);
   });

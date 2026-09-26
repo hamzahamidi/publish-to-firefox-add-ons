@@ -68,8 +68,6 @@ async function main(): Promise<void> {
   const zip = readArchive(zipPath, zipLabel);
   if (isCrx(zip)) throw new ActionError(`${zipLabel} is a CRX package. Pass the ZIP; the action reads the manifest and scans the entries before uploading.`);
   const archive = readZip(zip, zipLabel);
-  const manifest = readManifest(archive);
-  checkGeckoId(manifest, addonId, zipLabel);
 
   const sourceLabel = JSON.stringify(sourcePath);
   const source = sourcePath ? readArchive(sourcePath, sourceLabel) : undefined;
@@ -82,6 +80,8 @@ async function main(): Promise<void> {
   const needles = credentialNeedles(apiKey, apiSecret);
   const entries = scanArchive(archive, needles);
   const sourceEntries = sourceArchive ? scanArchive(sourceArchive, needles) : undefined;
+  const manifest = readManifest(archive);
+  checkGeckoId(manifest, addonId, zipLabel);
   info(`The ZIP holds version ${manifest.version} of ${addonId}.`);
   info(
     sourceEntries === undefined

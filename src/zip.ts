@@ -2,6 +2,7 @@ import { crc32, inflateRawSync } from 'node:zlib';
 import { ActionError } from './errors.ts';
 
 const END_OF_CENTRAL_DIRECTORY = 0x06054b50;
+const ZIP64_LOCATOR = 0x07064b50;
 const CENTRAL_DIRECTORY_ENTRY = 0x02014b50;
 const LOCAL_FILE_HEADER = 0x04034b50;
 export const MAX_ENTRY_BYTES = 100 * 1024 ** 2;
@@ -38,20 +39,22 @@ export function readZip(bytes: Buffer, label: string): ZipArchive {
   const count = bytes.readUInt16LE(end + 10);
   const size = bytes.readUInt32LE(end + 12);
   const start = bytes.readUInt32LE(end + 16);
-  if (count === 0xffff || size === 0xffffffff || start === 0xffffffff) {
+  const zip64Locator = end >= 20 && bytes.readUInt32LE(end - 20) === ZIP64_LOCATOR;
+  if (zip64Locator || count === 0xffff || size === 0xffffffff || start === 0xffffffff) {
     throw new ActionError(`${label} is a ZIP64 archive. ${UNREADABLE}`);
   }
   if (start + size > end) throw new ActionError(`${label} is not a valid ZIP file (central directory out of range).`);
+  if (start + size < end) throw new ActionError(`${label} is not a valid ZIP file (data between the central directory and its end record). ${UNREADABLE}`);
 
+  const damaged = () => new ActionError(`${label} is not a valid ZIP file (damaged central directory).`);
   const entries: ZipEntry[] = [];
   let total = 0;
   let offset = start;
-  for (let i = 0; i < count; i++) {
-    if (offset + 46 > end || bytes.readUInt32LE(offset) !== CENTRAL_DIRECTORY_ENTRY) {
-      throw new ActionError(`${label} is not a valid ZIP file (damaged central directory).`);
-    }
+  while (offset < end) {
+    if (offset + 46 > end || bytes.readUInt32LE(offset) !== CENTRAL_DIRECTORY_ENTRY) throw damaged();
     const nameLength = bytes.readUInt16LE(offset + 28);
     const centralEnd = offset + 46 + nameLength + bytes.readUInt16LE(offset + 30) + bytes.readUInt16LE(offset + 32);
+    if (centralEnd > end) throw damaged();
     const entry: ZipEntry = {
       flags: bytes.readUInt16LE(offset + 8),
       method: bytes.readUInt16LE(offset + 10),
@@ -65,9 +68,12 @@ export function readZip(bytes: Buffer, label: string): ZipArchive {
     };
     checkEntry(entry, label);
     total += entry.size;
-    if (total > MAX_TOTAL_BYTES) throw new ActionError(`${label} holds more than 250 MiB once uncompressed, the most AMO accepts.`);
+    if (total >= MAX_TOTAL_BYTES) throw new ActionError(`${label} holds 250 MiB or more once uncompressed. AMO accepts less than 250 MiB.`);
     entries.push(entry);
     offset = centralEnd;
+  }
+  if (entries.length !== count || entries.length !== bytes.readUInt16LE(end + 8)) {
+    throw new ActionError(`${label} is not a valid ZIP file (its end record does not count the ${entries.length} entries of its central directory). ${UNREADABLE}`);
   }
 
   return {
@@ -91,8 +97,10 @@ function checkEntry(entry: ZipEntry, label: string): void {
   if (entry.method !== 0 && entry.method !== 8) {
     throw new ActionError(`Entry ${name} of ${label} uses ZIP compression method ${entry.method}. ${UNREADABLE} AMO accepts only stored and deflated entries.`);
   }
-  if (entry.name.includes('\\') || entry.name.includes('../') || entry.name.startsWith('/') || /[\x00-\x1f\x7f]/.test(entry.name)) {
-    throw new ActionError(`Entry ${name} of ${label} has a name AMO refuses: no backslash, "../", leading "/" or control character is allowed.`);
+  // AMO's Python zipfile decodes a name as UTF-8 only with flag bit 11, and as cp437 otherwise, where only C0 and DEL are control characters.
+  const control = entry.flags & 0x800 ? /\p{C}/u : /[\x00-\x1f\x7f]/;
+  if (entry.name.includes('\\') || entry.name.includes('../') || entry.name === '..' || entry.name.startsWith('/') || control.test(entry.name)) {
+    throw new ActionError(`Entry ${name} of ${label} has a name AMO refuses: no backslash, "../", leading "/", name "..", or control or format character is allowed.`);
   }
   if (entry.size > MAX_ENTRY_BYTES) throw new ActionError(`Entry ${name} of ${label} is larger than 100 MiB once uncompressed, the most AMO accepts.`);
 }

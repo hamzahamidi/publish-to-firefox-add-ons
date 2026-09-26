@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ActionError } from '../src/errors.ts';
-import { isCrx, MAX_ENTRY_BYTES, readZip, type ZipArchive } from '../src/zip.ts';
-import { addonZip, makeZip } from './helpers.ts';
+import { isCrx, MAX_ENTRY_BYTES, MAX_TOTAL_BYTES, readZip, type ZipArchive } from '../src/zip.ts';
+import { addonFiles, addonZip, divergentZip, makeZip } from './helpers.ts';
 
 function fails(action: () => unknown, pattern: RegExp) {
   assert.throws(action, (error) => error instanceof ActionError && pattern.test(error.message));
@@ -53,17 +53,42 @@ describe('readZip', () => {
     fails(() => readZip(makeZip([{ name: 'bz.js', data: 'x', method: 12 }]), '"x"'), /uses ZIP compression method 12\..*AMO accepts only stored and deflated entries/);
   });
 
-  for (const name of ['dist\\a.js', '../evil.js', 'a/../../b', '/etc/passwd', 'bad\u0001name', 'tab\tname']) {
-    it(`refuses the entry name ${JSON.stringify(name)}, as AMO does`, () => {
+  for (const name of ['dist\\a.js', '../evil.js', 'a/../../b', '/etc/passwd', 'bad\u0001name', 'tab\tname', '..', 'x\u0085y', 'a\u200bb.js', 'a\u2060b.js', 'a\ue000.js']) {
+    it(`refuses the entry name ${JSON.stringify(name).replace(/[^\x20-\x7e]/g, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)}, as AMO does`, () => {
       fails(() => readZip(makeZip([{ name, data: 'x' }]), '"x"'), /has a name AMO refuses/);
     });
   }
 
-  it('refuses an entry over 100 MiB and a total over 250 MiB from the declared sizes, without inflating anything', () => {
+  it('accepts names AMO accepts, including a name without the UTF-8 flag that AMO reads as cp437', () => {
+    const names = ['é.js', '日本語.txt', '😀.png', '_locales/pt_BR/messages.json', 'a..b.js', '.hidden', 'a/..'];
+    assert.deepEqual(
+      readZip(makeZip(names.map((name) => ({ name, data: 'x' }))), '"x"').entries.map((entry) => entry.name),
+      names,
+    );
+    assert.equal(readZip(makeZip([{ name: 'x\u0085y', data: 'x', flags: 0 }]), '"x"').entries.length, 1);
+    fails(() => readZip(makeZip([{ name: 'bad\u007fname', data: 'x', flags: 0 }]), '"x"'), /has a name AMO refuses/);
+  });
+
+  it('refuses an entry over 100 MiB and a total of 250 MiB or more from the declared sizes, without inflating anything', () => {
     fails(() => readZip(makeZip([{ name: 'huge.bin', data: 'x', size: MAX_ENTRY_BYTES + 1 }]), '"x"'), /Entry "huge\.bin" of "x" is larger than 100 MiB/);
     readZip(makeZip([{ name: 'edge.bin', data: 'x', size: MAX_ENTRY_BYTES }]), '"x"');
-    const files = ['a', 'b', 'c'].map((name) => ({ name, data: 'x', size: 90 * 1024 ** 2 }));
-    fails(() => readZip(makeZip(files), '"x"'), /holds more than 250 MiB once uncompressed/);
+    const sized = (last: number) => makeZip([MAX_ENTRY_BYTES, MAX_ENTRY_BYTES, last].map((size, i) => ({ name: `${i}.bin`, data: 'x', size })));
+    fails(() => readZip(sized(MAX_TOTAL_BYTES - 2 * MAX_ENTRY_BYTES), '"x"'), /^"x" holds 250 MiB or more once uncompressed\. AMO accepts less than 250 MiB\.$/);
+    assert.equal(readZip(sized(MAX_TOTAL_BYTES - 2 * MAX_ENTRY_BYTES - 1), '"x"').entries.length, 3);
+  });
+
+  it('reads the central directory by its size, as AMO does, and refuses an archive whose end record disagrees', () => {
+    const files = addonFiles('1.0.0', { files: [{ name: 'dist/config.js', data: 'hidden' }] });
+    const cases: Array<[Parameters<typeof divergentZip>[0], RegExp]> = [
+      ['low-count', /^"x" is not a valid ZIP file \(its end record does not count the 3 entries of its central directory\)\. The action cannot read or scan it/],
+      ['zip64-locator', /^"x" is a ZIP64 archive\. The action cannot read or scan it/],
+      ['shifted-cd', /^"x" is not a valid ZIP file \(data between the central directory and its end record\)\. The action cannot read or scan it/],
+    ];
+    for (const [kind, pattern] of cases) fails(() => readZip(divergentZip(kind, files), '"x"'), pattern);
+    const zip = makeZip(files);
+    const oneField = Buffer.from(zip);
+    oneField.writeUInt16LE(2, zip.length - 22 + 8);
+    fails(() => readZip(oneField, '"x"'), /its end record does not count the 3 entries/);
   });
 
   it('refuses a damaged or out of range central directory', () => {
@@ -75,6 +100,9 @@ describe('readZip', () => {
     const outOfRange = Buffer.from(zip);
     outOfRange.writeUInt32LE(zip.length, end + 16);
     fails(() => readZip(outOfRange, '"x"'), /central directory out of range/);
+    const overlong = Buffer.from(zip);
+    overlong.writeUInt16LE(200, overlong.readUInt32LE(end + 16) + 28);
+    fails(() => readZip(overlong, '"x"'), /damaged central directory/);
   });
 
   it('names the entry that fails its CRC, is truncated, or inflates past its declared size', () => {

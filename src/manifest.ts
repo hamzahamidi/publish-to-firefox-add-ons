@@ -58,7 +58,8 @@ export function readManifest(archive: ZipArchive): AddonManifest {
     manifest = JSON.parse(stripComments(archive.read(matches[0]!).toString('utf8').replace(/^﻿/, '')));
   } catch (error) {
     if (error instanceof ActionError) throw error;
-    throw new ActionError(`manifest.json in ${label} is not valid JSON: ${(error as Error).message}`);
+    const place = /line (\d+) column (\d+)/.exec((error as Error).message);
+    throw new ActionError(`manifest.json in ${label} is not valid JSON${place ? ` at line ${place[1]}, column ${place[2]}` : ''}.`);
   }
   if (!isObject(manifest)) throw new ActionError(`manifest.json in ${label} is not a JSON object.`);
   if (!isAmoVersion(manifest.version)) {

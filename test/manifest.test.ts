@@ -70,6 +70,13 @@ describe('readManifest', () => {
     fails(() => readManifest(manifestZip('[]')), /is not a JSON object/);
   });
 
+  it('reports where the JSON breaks without quoting the manifest', () => {
+    for (const text of ['{"version": "1.0", "a": cabbage}', '{"version": "1.0",\n "a": 1cabbage}', '{"version": "1.0", "a": "cabbage']) {
+      fails(() => readManifest(manifestZip(text)), /^manifest\.json in "ext\.zip" is not valid JSON( at line \d+, column \d+)?\.$/);
+      fails(() => readManifest(manifestZip(text)), /^(?![\s\S]*abba)/);
+    }
+  });
+
   it('applies the AMO version rule and nothing stricter', () => {
     for (const version of ['1.0', '1.0.0-beta+build.1', '2*', 'a_b', 'x'.repeat(255)]) assert.equal(read({ version }).version, version);
     for (const version of ['', 'x'.repeat(256), '1.0 beta', '1.0/2', 'é', 1]) fails(() => read({ version }), /which AMO does not accept/);

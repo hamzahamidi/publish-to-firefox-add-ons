@@ -100,12 +100,62 @@ export function addonManifest(version: string, { id = ADDON_ID, manifest = {} }:
   return { manifest_version: 3, name: 'Test add-on', version, ...(id === null ? {} : { browser_specific_settings: { gecko: { id } } }), ...manifest };
 }
 
-export function addonZip(version: string, options: AddonZipOptions = {}): Buffer {
-  return makeZip([
+export function addonFiles(version: string, options: AddonZipOptions = {}): ZipFile[] {
+  return [
     { name: 'manifest.json', data: JSON.stringify(addonManifest(version, options)), method: options.method },
     { name: 'background.js', data: 'browser.runtime.onInstalled.addListener(() => {});\n', method: options.method },
     ...(options.files ?? []),
-  ]);
+  ];
+}
+
+export function addonZip(version: string, options: AddonZipOptions = {}): Buffer {
+  return makeZip(addonFiles(version, options));
+}
+
+export type DivergentZip = 'low-count' | 'zip64-locator' | 'shifted-cd';
+
+export function divergentZip(kind: DivergentZip, files: ZipFile[]): Buffer {
+  const zip = makeZip(files);
+  const end = zip.length - 22;
+  const start = zip.readUInt32LE(end + 16);
+  const records: Buffer[] = [];
+  for (let offset = start; offset < end; ) {
+    const next = offset + 46 + zip.readUInt16LE(offset + 28) + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
+    records.push(zip.subarray(offset, next));
+    offset = next;
+  }
+  const locals = zip.subarray(0, start);
+  const directory = zip.subarray(start, end);
+  const shown = records.slice(0, -1);
+  const eocd = Buffer.from(zip.subarray(end));
+  eocd.writeUInt16LE(shown.length, 8);
+  eocd.writeUInt16LE(shown.length, 10);
+  if (kind === 'low-count') return Buffer.concat([locals, directory, eocd]);
+  if (kind === 'zip64-locator') {
+    const record = Buffer.alloc(56);
+    record.writeUInt32LE(0x06064b50, 0);
+    record.writeBigUInt64LE(44n, 4);
+    record.writeUInt16LE(45, 12);
+    record.writeUInt16LE(45, 14);
+    record.writeBigUInt64LE(BigInt(records.length), 24);
+    record.writeBigUInt64LE(BigInt(records.length), 32);
+    record.writeBigUInt64LE(BigInt(directory.length), 40);
+    record.writeBigUInt64LE(BigInt(start), 48);
+    const locator = Buffer.alloc(20);
+    locator.writeUInt32LE(0x07064b50, 0);
+    locator.writeBigUInt64LE(BigInt(end), 8);
+    locator.writeUInt32LE(1, 16);
+    eocd.writeUInt32LE(shown.reduce((sum, each) => sum + each.length, 0), 12);
+    return Buffer.concat([locals, directory, record, locator, eocd]);
+  }
+  const decoy = Buffer.concat(shown);
+  const padding = Buffer.alloc(decoy.length);
+  for (let offset = 0; offset < decoy.length; offset += 46 + decoy.readUInt16LE(offset + 28) + decoy.readUInt16LE(offset + 30) + decoy.readUInt16LE(offset + 32)) {
+    decoy.writeUInt32LE(decoy.readUInt32LE(offset + 42) + padding.length, offset + 42);
+  }
+  eocd.writeUInt32LE(directory.length, 12);
+  eocd.writeUInt32LE(padding.length + locals.length, 16);
+  return Buffer.concat([padding, locals, decoy, directory, eocd]);
 }
 
 export function sourceZip(files: ZipFile[] = [{ name: 'src/background.ts', data: 'browser.runtime.onInstalled.addListener(() => {});\n' }]): Buffer {

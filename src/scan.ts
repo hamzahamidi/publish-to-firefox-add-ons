@@ -3,13 +3,14 @@ import type { ZipArchive } from './zip.ts';
 
 export interface Needle {
   name: string;
+  text: string;
   bytes: Buffer;
 }
 
 export function credentialNeedles(apiKey: string, apiSecret: string): Needle[] {
   return [
-    { name: 'API key', bytes: Buffer.from(apiKey, 'utf8') },
-    { name: 'API secret', bytes: Buffer.from(apiSecret, 'utf8') },
+    { name: 'API key', text: apiKey, bytes: Buffer.from(apiKey, 'utf8') },
+    { name: 'API secret', text: apiSecret, bytes: Buffer.from(apiSecret, 'utf8') },
   ];
 }
 
@@ -24,8 +25,10 @@ export function scanArchive(archive: ZipArchive, needles: Needle[]): number {
   }
   for (const entry of archive.entries) {
     const content = archive.read(entry);
+    // AMO searches each entry decoded as UTF-8 with errors='ignore', which drops the invalid bytes that Node replaces with U+FFFD.
+    const decoded = content.toString('utf8').replaceAll('�', '');
     for (const needle of needles) {
-      if (content.includes(needle.bytes)) throw found(needle, `entry ${JSON.stringify(entry.name)}`);
+      if (content.includes(needle.bytes) || decoded.includes(needle.text)) throw found(needle, `entry ${JSON.stringify(entry.name)}`);
     }
   }
   return archive.entries.length;
