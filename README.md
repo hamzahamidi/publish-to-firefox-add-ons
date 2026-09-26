@@ -505,7 +505,7 @@ AMO throttles writes per account: uploads at 6 per minute, 20 per hour and 48 pe
 | Run | Uploads | Submissions |
 | --- | --- | --- |
 | New version, no `source` | 1 | 1 |
-| New version with `source` | 1 | 1, or 2 with release notes, which need their own request. Approval notes also take a second one if AMO does not keep them from the request that carries the source, which is not verified |
+| New version with `source` | 1 | 1, or 2 with release notes, which need their own request. Approval notes take a second one when AMO does not keep them from the request that carries the source |
 | Re-run, nothing missing | 0 | 0 |
 | Re-run, notes missing | 0 | 1 |
 | Re-run, unreviewed version missing source and release notes | 0 | 2 |
@@ -532,7 +532,7 @@ What AMO imposes on any publishing tool:
 - One kind of credential: an account-wide key and secret that never expire. See [The credential](#the-credential).
 - A version number can be used once per add-on, across channels and after deletion, and a listed version must be greater than the latest signed listed one.
 - Packages and source archives up to 200,000,000 bytes, less than 250 MiB once uncompressed and at most 100 MiB per entry, with stored or deflated entries only.
-- A token lives at most 5 minutes. If AMO checks it only once a whole upload has arrived, which is not verified, a 200 MB package needs about 6 Mbit/s of upload bandwidth.
+- Each request carries a token that lives at most 5 minutes, so a 200 MB package needs about 6 Mbit/s of upload bandwidth to finish in time.
 - Mozilla reviews listed versions, and signing can take 24 hours or longer. Any version, unlisted ones included, can be reviewed later and disabled.
 - The rate limits above, shared by everything that uses the account.
 - AMO documents the v5 API as not frozen. The action checks the type of every field it reads and stops on a value it does not know rather than guessing.
