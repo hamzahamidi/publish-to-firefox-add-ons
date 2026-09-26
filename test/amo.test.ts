@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, describe, it } from 'node:test';
-import { type PublishOptions, type PublishResult, publishToAmo } from '../src/amo.ts';
+import { DEFAULT_TIMING, type PublishOptions, type PublishResult, publishToAmo } from '../src/amo.ts';
 import { ActionError } from '../src/errors.ts';
 import { ACCOUNT, ADDON_ID, addonZip, API_KEY, API_SECRET, sourceZip, startMockStore } from './helpers.ts';
 import { type MockAmo, type MockVersion, startMockAmo } from './mock-amo.ts';
@@ -91,6 +91,13 @@ async function rejection(promise: Promise<unknown>): Promise<ActionError> {
 const text = (error: ActionError) => (error.details ? `${error.message}\n${error.details}` : error.message);
 
 const seed = (version: string, extra: Partial<MockVersion> = {}) => amo.addVersion({ version, channel: 'unlisted', ...extra });
+const lifetimes = () =>
+  amo.requests
+    .filter((request) => request.token)
+    .map((request) => {
+      const claims = JSON.parse(Buffer.from(request.token!.split('.')[1]!, 'base64url').toString());
+      return claims.exp - claims.iat;
+    });
 const writes = () => calls().filter((call) => !call.startsWith('GET'));
 
 describe('publishToAmo: new versions', () => {
@@ -118,6 +125,7 @@ describe('publishToAmo: new versions', () => {
     assert.ok(run.lines.includes(`Created version 1.4.0 (id ${created().id}) in the unlisted channel, with release notes and approval notes. File status: unreviewed.`));
     assert.deepEqual(run.slept, [2000]);
     assert.ok(amo.requests.every((request) => request.verdict === (request.route === 'site' ? 'none' : 'ok')));
+    assert.deepEqual(lifetimes(), [90, 90, 90, 90, 300, 90, 90], 'a 300 s token for the upload only');
     assert.equal(only(amo.uploads).submitted, true);
   });
 
@@ -154,6 +162,7 @@ describe('publishToAmo: new versions', () => {
     assert.match(version.source ?? '', /source\.zip$/);
     assert.ok(run.lines.includes(`Created version 2.0.0 (id ${version.id}) in the listed channel, with the source ZIP and approval notes. File status: unreviewed.`));
     assert.ok(run.lines.includes('Set the release notes.'));
+    assert.deepEqual(lifetimes(), [90, 90, 90, 90, 300, 90, 300, 90], 'a 300 s token for the upload and the multipart create, 90 s for the JSON PATCH');
     assert.ok(run.lines.some((line) => line.startsWith('Mozilla reviews listed versions; signing can take 24 hours or longer') && line.endsWith(`/versions/${version.id}`)));
   });
 
@@ -345,22 +354,79 @@ describe('publishToAmo: lost answers and crashes', () => {
     amo.fault('upload:create', { drop: 'after' });
     const run = publish('1.4.0');
     assert.equal((await run).result, 'submitted');
-    assert.equal(count(UPLOAD), 2);
+    assert.deepEqual(calls().slice(4), [LIST(1), LIST(2), UPLOAD, UPLOAD, POLL, CREATE]);
     assert.ok(run.lines.includes('Uploading once more.'));
     assert.equal(amo.uploads.filter((upload) => upload.manifestVersion === '1.4.0' && !upload.submitted).length, 1);
   });
 
-  it('uploads again when the second listing shows more than one new upload or a mismatching one', async () => {
-    amo.fault('upload:create', { drop: 'after', then: () => amo.addUpload({ manifestVersion: '5.0' }) });
-    await publish('1.4.0');
-    assert.equal(count(UPLOAD), 2);
+  const notAdopted = async (reason: string) => {
+    const run = publish('1.4.0');
+    assert.equal((await run).result, 'submitted', reason);
+    assert.deepEqual(calls().slice(4, 7), [LIST(), UPLOAD, LIST()], reason);
+    assert.equal(count(UPLOAD), 2, reason);
+    assert.ok(!run.lines.some((line) => line.startsWith('Adopting upload')), reason);
+    return run.lines;
+  };
+
+  it('uploads again when the second listing gained two matching uploads', async () => {
+    amo.fault('upload:create', { drop: 'after', then: () => amo.addUpload({ channel: 'unlisted', processed: false, manifestVersion: '1.4.0' }) });
+    await notAdopted('two new uploads');
+  });
+
+  it('uploads again when the only new upload is in the other channel, has another version, or is submitted', async () => {
+    const others = [
+      { channel: 'listed', processed: false, manifestVersion: '1.4.0' },
+      { channel: 'unlisted', processed: true, manifestVersion: '9.9.9' },
+      { channel: 'unlisted', processed: false, manifestVersion: '1.4.0', submitted: true },
+    ];
+    for (const other of others) {
+      amo.reset();
+      amo.fault('upload:create', { drop: 'before', then: () => amo.addUpload(other) });
+      await notAdopted(JSON.stringify(other));
+    }
+  });
+
+  it('uploads again when the second listing fails or is incomplete, even when it holds this run\'s upload', async () => {
+    amo.fault('upload:create', { drop: 'after' });
+    amo.fault('upload:list', {}, { status: 500 }, { status: 500 }, { status: 500 });
+    const failed = await notAdopted('failed listing');
+    assert.equal(count(LIST()), 4);
+    assert.ok(failed.some((line) => line.startsWith('The upload list is incomplete (GET /api/v5/addons/upload/?page_size=50&page=1 returned HTTP 500')));
 
     amo.reset();
-    amo.fault('upload:create', { status: 502 });
-    amo.fault('upload:list', {}, { mutate: (body) => ({ ...body, count: 1, results: [{ ...body.results[0], uuid: 'f'.repeat(32), submitted: true }] }) });
-    amo.addUpload({ manifestVersion: '1.4.0', channel: 'unlisted', uuid: 'a'.repeat(32), submitted: true });
-    await publish('1.4.0');
-    assert.equal(count(UPLOAD), 2);
+    amo.fault('upload:create', { drop: 'after' });
+    amo.fault('upload:list', {}, { mutate: (body) => ({ ...body, count: body.count + 1 }) });
+    const short = await notAdopted('incomplete listing');
+    assert.ok(short.includes('The upload list is incomplete (1 distinct uploads across the pages, but a count of 2), so this run will not adopt an upload after a lost answer.'));
+  });
+
+  for (const [label, fault] of [
+    ['HTTP 500', { status: 500 }],
+    ['HTTP 503 without a body', { status: 503 }],
+    ['HTTP 503 with a body that is not JSON', { status: 503, body: 'upstream' }],
+  ] as const) {
+    it(`recovers from ${label} on the upload and on the create`, async () => {
+      amo.fault('upload:create', fault);
+      const upload = publish('1.4.0');
+      assert.equal((await upload).result, 'submitted');
+      assert.deepEqual(calls().slice(4), [LIST(), UPLOAD, LIST(), UPLOAD, POLL, CREATE]);
+      assert.ok(upload.lines.some((line) => line.startsWith(`The answer to the upload was lost (${UPLOAD} returned HTTP ${fault.status}`)));
+
+      amo.reset();
+      amo.fault('version:create', fault);
+      assert.equal((await publish('1.4.0')).result, 'submitted');
+      assert.deepEqual(calls(), [...NEW_VERSION('1.4.0'), CREATE, POLL, LOOKUP('1.4.0'), CREATE]);
+      assert.equal(created().version, '1.4.0');
+    });
+  }
+
+  it('adopts its upload after a 201 whose body is not JSON', async () => {
+    amo.fault('upload:create', { notJson: true });
+    const run = publish('1.4.0');
+    assert.equal((await run).result, 'submitted');
+    assert.deepEqual(calls().slice(4), [LIST(), UPLOAD, LIST(), POLL, CREATE]);
+    assert.ok(run.lines.includes(`The answer to the upload was lost (${UPLOAD} returned HTTP 201 with a body that is not JSON).`));
+    assert.ok(run.lines.some((line) => line.startsWith('Adopting upload ')));
   });
 
   it('stops after two lost upload answers without submitting anything', async () => {
@@ -439,6 +505,23 @@ describe('publishToAmo: validation', () => {
     const error = await rejection(publish('1.4.0'));
     assert.equal(text(error), "AMO's validation refused version 1.4.0.\nmanifest.json:3 Unsupported manifest key\nBroken file");
     assert.equal(count(CREATE), 0);
+  });
+
+  it('prints at most 20 validation errors', async () => {
+    amo.queueUpload({ valid: false, messages: Array.from({ length: 22 }, (_, i) => ({ type: 'error', message: `Error ${i}`, id: ['e'] })) });
+    const error = await rejection(publish('1.4.0'));
+    assert.deepEqual(
+      error.details?.split('\n'),
+      Array.from({ length: 20 }, (_, i) => `Error ${i}`),
+    );
+  });
+
+  it('checks validation for 10 minutes by default: a first check after 2 s, then 120 checks 5 s apart', async () => {
+    assert.deepEqual(DEFAULT_TIMING, { retryDelayMs: 5000, validationFirstMs: 2000, validationIntervalMs: 5000, validationChecks: 120, waitIntervalMs: 15000, resolutionDelayMs: 5000 });
+    amo.queueUpload({ polls: 1000 });
+    const run = publish('1.4.0', { timing: {} });
+    assert.match((await rejection(run)).message, /^AMO was still validating after 10 minutes\./);
+    assert.equal(count(POLL), 120);
   });
 
   it('explains the revocation when AMO found an API secret in the package', async () => {
@@ -702,6 +785,29 @@ describe('publishToAmo: add-on and author', () => {
     assert.ok(run.lines.includes('AMO: add-on my-extension@example.com is public, and this account is an owner of it. An account with the developer role cannot delete the add-on or change its authors; see the README.'));
   });
 
+  it('stops on a 401, 403 or 451 to the version lookup instead of reading it as a new version', async () => {
+    const cases: Array<[number, unknown, RegExp]> = [
+      [401, { detail: 'Invalid API Key.' }, /\nAMO does not know this API key\./],
+      [403, { detail: 'You do not have permission to perform this action.' }, /\nThe account behind api-key is not an author of this add-on\./],
+      [451, { detail: 'Unavailable for legal reasons.' }, /\nAMO restricts this add-on in the runner's country\./],
+    ];
+    for (const [status, body, hint] of cases) {
+      amo.reset();
+      amo.fault('version', { status, body });
+      const error = await rejection(publish('1.4.0'));
+      assert.ok(text(error).startsWith(`${LOOKUP('1.4.0')} returned HTTP ${status}: `), text(error));
+      assert.match(text(error), hint);
+      assert.deepEqual(calls(), PREFLIGHT('1.4.0'));
+    }
+    amo.reset();
+    const version = seed('1.4.0');
+    amo.fault('version:patch', { drop: 'before' });
+    amo.fault('version', {}, { status: 403, body: { detail: 'You do not have permission to perform this action.' } });
+    const error = await rejection(publish('1.4.0', { releaseNotes: 'Notes.' }));
+    assert.match(text(error), /^GET \/api\/v5\/addons\/addon\/1234\/versions\/\d+\/ returned HTTP 403: .*\nThe account behind api-key is not an author/);
+    assert.deepEqual(calls().slice(-2), [PATCH(version.id), VERSION(version.id)]);
+  });
+
   it('stops before any upload when the account is not an author', async () => {
     const other = amo.addAccount({ id: 777, key: 'user:777:1', secret: 's'.repeat(64) });
     const run = publish('1.4.0', { apiKey: other.key, apiSecret: other.secret });
@@ -847,6 +953,14 @@ describe('publishToAmo: upload and create refusals', () => {
     assert.equal((await publish('1.4.0')).result, 'submitted');
     assert.equal(count(CREATE), 2);
     amo.reset();
+    const version = seed('1.4.0');
+    amo.fault('version:patch', { status: 429, headers: { 'Retry-After': '5' } });
+    const patched = publish('1.4.0', { releaseNotes: 'Notes.' });
+    assert.equal((await patched).result, 'skipped');
+    assert.deepEqual(writes(), [PATCH(version.id), PATCH(version.id)]);
+    assert.deepEqual(patched.slept, [5000]);
+    assert.deepEqual(version.releaseNotes, { 'en-US': 'Notes.' });
+    amo.reset();
     amo.fault('upload:create', { status: 429, headers: { 'Retry-After': new Date(Date.now() + 3_600_000).toUTCString() } });
     assert.match(text(await rejection(publish('1.4.0'))), /Try again after 60 minutes\.$/);
     amo.reset();
@@ -969,6 +1083,7 @@ describe('publishToAmo: completing a version', () => {
     assert.deepEqual(Object.keys(multipart!.form!).sort(), ['approval_notes', 'source']);
     assert.deepEqual(json!.json, { release_notes: { 'en-US': 'Notes.' } });
     assert.ok(run.lines.includes('Added the source ZIP and the approval notes.'));
+    assert.deepEqual(lifetimes(), [90, 90, 90, 300, 90], 'a 300 s token for the multipart PATCH only');
   });
 
   it('keeps the approval notes for the JSON PATCH when the multipart PATCH did not store them', async () => {
@@ -1050,6 +1165,16 @@ describe('publishToAmo: completing a version', () => {
     seed('1.4.0');
     amo.fault('version:patch', { drop: 'before', then: () => amo.fault('version', { status: 500 }, { status: 500 }, { status: 500 }) });
     assert.match((await rejection(publish('1.4.0', { releaseNotes: 'Notes.' }))).message, /versions\/\d+\/ returned HTTP 500/);
+  });
+
+  it('sends the approval notes again after an unclear PATCH when the version still lacks them', async () => {
+    const version = seed('1.4.0');
+    amo.fault('version:patch', { drop: 'before' });
+    const run = publish('1.4.0', { approvalNotes: 'Build it.' });
+    await run;
+    assert.deepEqual(calls().slice(-3), [PATCH(version.id), VERSION(version.id), PATCH(version.id)]);
+    assert.equal(version.approvalNotes, 'Build it.');
+    assert.ok(run.lines.includes('Set the approval notes.'));
   });
 
   it('reports the PATCHes a dry run would send', async () => {

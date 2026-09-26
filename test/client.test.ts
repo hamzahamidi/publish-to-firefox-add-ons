@@ -219,6 +219,16 @@ describe('amoClient', () => {
     assert.equal((await amo.read(get('/missing/'))).status, 404);
   });
 
+  it('gives a request that carries a file the file timeout, not the GET or JSON one', async () => {
+    const amo = client({ getTimeoutMs: 50, jsonTimeoutMs: 50, fileTimeoutMs: 2000 });
+    server.on('POST /file/', { status: 201, body: { ok: 1 }, answerAfterMs: 300 });
+    assert.equal((await amo.send({ method: 'POST', path: '/file/', form: new FormData(), file: true })).status, 201);
+    server.on('POST /json/', { status: 201, body: { ok: 1 }, answerAfterMs: 300 });
+    assert.match((await rejection(amo.send({ method: 'POST', path: '/json/', json: {} }))).message, /^POST \/json\/ failed: /);
+    server.on('GET /read/', { body: { ok: 1 }, answerAfterMs: 300 });
+    assert.match((await rejection(amo.send(get('/read/')))).message, /^GET \/read\/ failed: /);
+  });
+
   it('returns other statuses from a read without retrying', async () => {
     server.on('GET /gone/', { status: 404, body: { detail: 'Not found.' } });
     assert.equal((await client().read(get('/gone/'))).status, 404);

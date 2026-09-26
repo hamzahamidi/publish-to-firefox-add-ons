@@ -168,6 +168,7 @@ export interface Reply {
   headers?: Record<string, string>;
   partial?: boolean;
   delayMs?: number;
+  answerAfterMs?: number;
 }
 
 export interface RecordedRequest {
@@ -228,8 +229,12 @@ export async function startMockStore({ onRequest }: { onRequest?: (request: Reco
         setTimeout(() => res.socket?.destroy(), 20);
         return;
       }
-      res.writeHead(reply.status ?? 200, { 'Content-Type': 'application/json', ...reply.headers });
-      res.end(typeof reply.body === 'string' || Buffer.isBuffer(reply.body) ? reply.body : JSON.stringify(reply.body ?? {}));
+      const answer = () => {
+        res.writeHead(reply.status ?? 200, { 'Content-Type': 'application/json', ...reply.headers });
+        res.end(typeof reply.body === 'string' || Buffer.isBuffer(reply.body) ? reply.body : JSON.stringify(reply.body ?? {}));
+      };
+      if (reply.answerAfterMs) setTimeout(answer, reply.answerAfterMs);
+      else answer();
     });
   });
   await new Promise<void>((ready) => server.listen(0, '127.0.0.1', ready));

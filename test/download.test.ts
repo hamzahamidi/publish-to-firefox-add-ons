@@ -7,7 +7,7 @@ import { after, afterEach, before, describe, it } from 'node:test';
 import { amoClient } from '../src/client.ts';
 import { type DownloadOptions, downloadSignedFile } from '../src/download.ts';
 import { ActionError } from '../src/errors.ts';
-import { ADDON_ID, addonManifest, API_KEY, API_SECRET, makeZip, type MockStore, startMockStore } from './helpers.ts';
+import { ADDON_ID, addonManifest, API_KEY, API_SECRET, makeZip, type MockStore, type Reply, startMockStore } from './helpers.ts';
 
 let server: MockStore;
 let other: MockStore;
@@ -39,8 +39,8 @@ function signedXpi({ id = ADDON_ID, version = '1.4.0', skip = '' }: { id?: strin
 
 const hashOf = (bytes: Buffer) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
-function download(bytes: Buffer, options: Partial<DownloadOptions> = {}) {
-  server.on('GET /firefox/downloads/file/1/x.xpi', { body: bytes, headers: { 'Content-Type': 'application/x-xpinstall' } });
+function download(bytes: Buffer, options: Partial<DownloadOptions> = {}, replies: Reply[] = [{ body: bytes, headers: { 'Content-Type': 'application/x-xpinstall' } }]) {
+  server.on('GET /firefox/downloads/file/1/x.xpi', ...replies);
   const target = join(dir, 'out', 'signed.xpi');
   const promise = downloadSignedFile({
     client: amoClient({ apiBase: server.base, apiKey: API_KEY, apiSecret: API_SECRET, sleep: async () => {} }),
@@ -98,8 +98,23 @@ describe('downloadSignedFile', () => {
     assert.ok(existsSync(run.target));
   });
 
-  it('refuses a file without the three signature entries', async () => {
-    await refused(download(signedXpi({ skip: 'META-INF/mozilla.rsa' })), /^The signed file has no META-INF\/mozilla\.rsa, so Mozilla did not sign it\. Nothing was written\.$/);
+  for (const name of SIGNATURES) {
+    it(`refuses a file without ${name}`, async () => {
+      await refused(download(signedXpi({ skip: name })), new RegExp(`^The signed file has no ${name.replaceAll('.', '\\.')}, so Mozilla did not sign it\\. Nothing was written\\.$`));
+    });
+  }
+
+  it('downloads again after a 5xx or a network error', async () => {
+    const bytes = signedXpi();
+    const run = download(bytes, {}, [{ status: 503 }, { delayMs: 1 }, { body: bytes, headers: { 'Content-Type': 'application/x-xpinstall' } }]);
+    await run;
+    assert.deepEqual(readFileSync(run.target), bytes);
+    assert.equal(server.requests.length, 3);
+  });
+
+  it('stops after three failed tries to download, and writes nothing', async () => {
+    await refused(download(signedXpi(), {}, [{ status: 500 }, { status: 500 }, { status: 500 }]), /returned HTTP 500/);
+    assert.equal(server.requests.length, 3);
   });
 
   it('refuses a file for another add-on or another version', async () => {

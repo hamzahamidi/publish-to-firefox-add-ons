@@ -133,6 +133,14 @@ describe('action', () => {
     assert.match(run.stdout, /^Waiting up to 15 minutes for AMO to sign version 1\.4\.0\.$/m);
   });
 
+  it('passes wait-timeout to the wait', async () => {
+    amo.config.signAfterReads = 1;
+    const run = await runAction(baseInputs('1.4.0', { wait: 'true', 'wait-timeout': '1' }));
+    assert.equal(run.code, 0, run.stdout);
+    assert.match(run.stdout, /^Waiting up to 1 minutes for AMO to sign version 1\.4\.0\.$/m);
+    assert.equal(run.outputs.state, 'public');
+  });
+
   it('sets no edit-url when AMO returns one that is not a canonical URL on its host', async () => {
     for (const editUrl of [`${amo.base}/en-US/\n$(curl evil.example)`, `${amo.base}\\@evil.example/`]) {
       amo.reset();
@@ -264,6 +272,7 @@ describe('action', () => {
     ['a missing zip input', () => ({ zip: '' }), /Input zip is required\./],
     ['source equal to zip', () => ({ zip: zipPath(), source: zipPath() }), /Input source must name a different file than zip\./],
     ['signed-xpi equal to zip', () => ({ zip: zipPath(), 'signed-xpi': zipPath() }), /Input signed-xpi must name a different file than zip and source\./],
+    ['signed-xpi equal to source', () => ({ source: file('same-source.zip', sourceZip()), 'signed-xpi': join(dir, 'same-source.zip'), 'dry-run': 'true' }), /Input signed-xpi must name a different file than zip and source\./],
   ];
   for (const [label, override, pattern] of invalid) {
     it(`stops before any request on ${label}`, async () => {
@@ -299,6 +308,12 @@ describe('action', () => {
       assert.equal(run.outputs.version, undefined);
     });
   }
+
+  it('accepts approval notes of exactly 3,000 characters', async () => {
+    const run = await runAction(baseInputs('1.0.0', { 'dry-run': 'true', 'approval-notes': 'é'.repeat(3000) }));
+    assert.equal(run.code, 0, run.stdout);
+    assert.equal(run.outputs.result, 'dry-run');
+  });
 
   it('scans a malformed manifest before parsing it, so no message quotes the secret', async () => {
     const secret = `c${API_SECRET.slice(1)}`;
