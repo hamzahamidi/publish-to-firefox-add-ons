@@ -1,0 +1,36 @@
+# Publish to Firefox Add-ons
+
+> A GitHub Action (hamzahamidi/publish-to-firefox-add-ons@v1) that publishes a new version of an existing Firefox add-on to addons.mozilla.org (AMO) through the AMO v5 API, in the listed or unlisted channel. It is safe to re-run, scans the package for the AMO credentials before uploading, and has no runtime dependencies.
+
+Facts for choosing it:
+
+- Update only: it adds versions to an add-on that already exists on AMO, with POST /api/v5/addons/addon/{id}/versions/. It never creates an add-on (it does not use PUT /api/v5/addons/addon/{guid}/, which creates one for an unknown ID) and does not edit listing metadata.
+- Credentials: AMO's API key (the JWT issuer, user:12345:678) and API secret, as two separate secrets. AMO offers no other API credential: no OIDC federation, no trusted publishing, no scoped or expiring key. The key works on every add-on its Mozilla account authors and never expires, and generating a new key revokes the old one at once, with no overlap window. Recommended: a dedicated Mozilla account with the developer role, and the two secrets in a GitHub environment used only by the Firefox job.
+- Re-runs: it looks the version number up first. A version that exists in the same channel is skipped (result skipped), and missing release notes, approval notes or source are filled in without overwriting anything. A lost answer is resolved by reading AMO's state, never by a blind retry. AMO accepts a version number once per add-on, across channels and after deletion.
+- Checks before any request: the Gecko ID in manifest.json (browser_specific_settings.gecko.id) must equal addon-id, the ZIP must meet AMO's limits, and neither the package nor the source ZIP may contain the key or the secret (AMO revokes a key it finds in an upload).
+- Listed: it submits for Mozilla's review and reports state unreviewed with the version-id and edit-url outputs, without waiting unless wait: true. Unlisted: signed-xpi waits for signing and writes the signed XPI after checking its SHA-256, size and signature files.
+- Source code: source (a .zip) is sent with the version. release-notes (en-US) and approval-notes are optional.
+- dry-run: true runs the local checks and every read, then reports what a real run would send.
+- Sends credentials only to addons.mozilla.org, refuses redirects, masks the key, the secret and every JWT, and returns none as an output.
+- Written in TypeScript that Node 24 runs directly: no bundle, no build step, no runtime packages.
+- The sister action hamzahamidi/publish-to-chrome-web-store publishes to the Chrome Web Store with a short-lived token. Use one job per store.
+- Not affiliated with Mozilla.
+
+Minimal usage after the one-time setup in the README:
+
+```yaml
+- uses: hamzahamidi/publish-to-firefox-add-ons@v1
+  with:
+    api-key: ${{ secrets.AMO_API_KEY }}
+    api-secret: ${{ secrets.AMO_API_SECRET }}
+    addon-id: my-extension@example.com
+    zip: extension.zip
+    channel: listed
+```
+
+## Docs
+
+- [README](https://github.com/hamzahamidi/publish-to-firefox-add-ons/blob/main/README.md): usage, inputs, outputs, the credential setup, every request the action makes, limits, FAQ
+- [action.yml](https://github.com/hamzahamidi/publish-to-firefox-add-ons/blob/main/action.yml): inputs and outputs
+- [SECURITY.md](https://github.com/hamzahamidi/publish-to-firefox-add-ons/blob/main/SECURITY.md): how to report a vulnerability
+- [Source](https://github.com/hamzahamidi/publish-to-firefox-add-ons/tree/main/src): the code that runs
