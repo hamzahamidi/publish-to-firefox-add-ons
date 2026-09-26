@@ -1,0 +1,65 @@
+name: Publish to Firefox Add-ons
+description: Publish a new version of an existing Firefox add-on to addons.mozilla.org, listed or unlisted, with safe re-runs and no runtime dependencies.
+author: Hamza Hamidi
+
+branding:
+  icon: upload-cloud
+  color: orange
+
+inputs:
+  api-key:
+    description: AMO API key (the JWT issuer, user:12345:678) from the API Credentials page of the Developer Hub. Store it as its own secret.
+    required: true
+  api-secret:
+    description: AMO API secret from the same page. Store it as its own secret, never inside a JSON secret.
+    required: true
+  addon-id:
+    description: The add-on ID, as in browser_specific_settings.gecko.id. The add-on must already exist on AMO.
+    required: true
+  zip:
+    description: Path to the extension package (.zip or .xpi) with manifest.json at its root.
+    required: true
+  channel:
+    description: listed (public on addons.mozilla.org after review) or unlisted (signed for self-distribution).
+    required: true
+  source:
+    description: Path to a ZIP of the source code, for bundled, minified or templated code. Never built or inferred by the action.
+    required: false
+  release-notes:
+    description: Release notes in English (en-US).
+    required: false
+  approval-notes:
+    description: Notes for Mozilla reviewers, such as build instructions. Only Mozilla and the add-on's authors see them.
+    required: false
+  wait:
+    description: Wait until AMO signs the version, or rejects it, before finishing.
+    required: false
+    default: 'false'
+  signed-xpi:
+    description: Unlisted only. Wait for signing and write the verified signed XPI to this path.
+    required: false
+  wait-timeout:
+    description: Minutes to wait with wait or signed-xpi, 1 to 360. 15 when omitted.
+    required: false
+  dry-run:
+    description: Run every local check and every read, then report what would happen without uploading or changing anything.
+    required: false
+    default: 'false'
+
+outputs:
+  result:
+    description: submitted (this run created the version), skipped (the version already existed in this channel) or dry-run.
+  state:
+    description: AMO file status when the action finished, unreviewed, public or disabled. Empty for a dry run of a new version.
+  version:
+    description: Version read from manifest.json.
+  version-id:
+    description: AMO's numeric version id, when the version exists.
+  edit-url:
+    description: The version's Developer Hub page.
+  signed-xpi:
+    description: Path of the verified signed XPI, when signed-xpi was given and the download succeeded.
+
+runs:
+  using: node24
+  main: src/main.ts
