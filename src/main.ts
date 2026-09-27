@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { type OutputName, publishToAmo } from './amo.ts';
 import { AMO_BASE } from './client.ts';
+import { parseCompatibility } from './compatibility.ts';
 import { ActionError } from './errors.ts';
 import { checkGeckoId, readManifest } from './manifest.ts';
 import { error, getBooleanInput, getInput, info, mask, setOutput, warning } from './runner.ts';
@@ -41,6 +42,7 @@ async function main(): Promise<void> {
   const sourcePath = getInput('source');
   const releaseNotes = getInput('release-notes');
   const approvalNotes = getInput('approval-notes');
+  const compatibility = parseCompatibility(getInput('compatibility'));
   const wait = getBooleanInput('wait', false);
   const signedXpi = getInput('signed-xpi');
   const waitTimeoutInput = getInput('wait-timeout');
@@ -82,6 +84,13 @@ async function main(): Promise<void> {
   const sourceEntries = sourceArchive ? scanArchive(sourceArchive, needles) : undefined;
   const manifest = readManifest(archive);
   checkGeckoId(manifest, addonId, zipLabel);
+  const androidRange = compatibility && !Array.isArray(compatibility) ? compatibility.android : undefined;
+  if (manifest.geckoAndroid && androidRange && (androidRange.min || androidRange.max)) {
+    throw new ActionError(
+      `manifest.json in ${zipLabel} has browser_specific_settings.gecko_android, so AMO takes the Firefox for Android versions from the manifest and refuses others.`,
+      'Set strict_min_version or strict_max_version under gecko_android, or list android in compatibility without min and max.',
+    );
+  }
   info(`The ZIP holds version ${manifest.version} of ${addonId}.`);
   info(
     sourceEntries === undefined
@@ -109,6 +118,7 @@ async function main(): Promise<void> {
     sourceName: source ? uploadName(sourcePath) : undefined,
     releaseNotes: releaseNotes || undefined,
     approvalNotes: approvalNotes || undefined,
+    compatibility,
     wait,
     waitTimeoutMinutes: waitTimeoutInput ? Number(waitTimeoutInput) : undefined,
     signedXpi: signedXpi || undefined,

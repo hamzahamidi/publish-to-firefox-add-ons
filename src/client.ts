@@ -3,7 +3,7 @@ import { ActionError, networkReason } from './errors.ts';
 import { LONG_LIFETIME, mintToken, SHORT_LIFETIME } from './jwt.ts';
 
 export const AMO_BASE = 'https://addons.mozilla.org';
-export const ACTION_VERSION = '1.0.0';
+export const ACTION_VERSION = '1.1.0';
 export const USER_AGENT = `publish-to-firefox-add-ons/${ACTION_VERSION} (+https://github.com/hamzahamidi/publish-to-firefox-add-ons)`;
 export const MAX_BODY_BYTES = 250_000_000;
 

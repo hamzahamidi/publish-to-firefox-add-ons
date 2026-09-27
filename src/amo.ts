@@ -1,4 +1,5 @@
 import { AMO_BASE, type AmoClient, amoClient, AmoError, ambiguousStatus, AUTHOR_HINT, definiteUnavailable, type Reply, type Request, sleepFor } from './client.ts';
+import { type Compatibility, compatibilityMatches, describeCompatibility } from './compatibility.ts';
 import {
   type Addon,
   decodeAddon,
@@ -46,6 +47,7 @@ export interface PublishOptions {
   sourceName?: string;
   releaseNotes?: string;
   approvalNotes?: string;
+  compatibility?: Compatibility;
   wait?: boolean;
   waitTimeoutMinutes?: number;
   signedXpi?: string;
@@ -109,7 +111,7 @@ function compareDotted(a: string, b: string): number {
 const normalized = (text: string | undefined) => (text ?? '').replace(/\r\n?/g, '\n').trim();
 
 export async function publishToAmo(options: PublishOptions): Promise<PublishResult> {
-  const { apiKey, apiSecret, addonId, version, channel, zip, zipName, source, sourceName = 'source.zip', releaseNotes, approvalNotes, signedXpi } = options;
+  const { apiKey, apiSecret, addonId, version, channel, zip, zipName, source, sourceName = 'source.zip', releaseNotes, approvalNotes, compatibility, signedXpi } = options;
   const { dryRun = false, apiBase = AMO_BASE, waitTimeoutMinutes = 15, sleep = sleepFor, log = () => {}, warn = () => {}, output = () => {} } = options;
   const wait = options.wait === true || Boolean(signedXpi);
   const timing: Timing = { ...DEFAULT_TIMING, ...options.timing };
@@ -392,7 +394,12 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
     return {
       method: 'POST',
       path: createPath,
-      json: { upload: uuid, ...(releaseNotes ? { release_notes: { 'en-US': releaseNotes } } : {}), ...(approvalNotes ? { approval_notes: approvalNotes } : {}) },
+      json: {
+        upload: uuid,
+        ...(releaseNotes ? { release_notes: { 'en-US': releaseNotes } } : {}),
+        ...(approvalNotes ? { approval_notes: approvalNotes } : {}),
+        ...(compatibility ? { compatibility } : {}),
+      },
     };
   }
 
@@ -554,6 +561,14 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
         warn(`Version ${version} has other approval notes on AMO. The action leaves them; edit them in the Developer Hub.`);
       }
     }
+    let needCompatibility = false;
+    if (compatibility) {
+      if (current.compatibility === undefined) throw unknownState(versionWhere, 'compatibility', undefined);
+      if (!compatibilityMatches(compatibility, current.compatibility)) {
+        needCompatibility = true;
+        if (!ours) log(`Version ${version} is compatible with ${describeCompatibility(current.compatibility)} on AMO; the compatibility input asks for ${describeCompatibility(compatibility)}.`);
+      }
+    }
     if (releaseNotes) {
       if (!normalized(current.releaseNotes)) needNotes = true;
       else if (!ours && normalized(current.releaseNotes) !== normalized(releaseNotes)) {
@@ -563,7 +578,7 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
     const path = versionPath(current.id);
     if (dryRun) {
       if (needSource) log(`Dry run: a real run would send PATCH ${path} with the source ZIP${needApproval ? ' and the approval notes' : ''}.`);
-      const fields = [needNotes && 'the release notes', needApproval && !needSource && 'the approval notes'].filter(Boolean);
+      const fields = [needNotes && 'the release notes', needApproval && !needSource && 'the approval notes', needCompatibility && 'the compatibility'].filter(Boolean);
       if (fields.length > 0) log(`Dry run: a real run would send PATCH ${path} with ${fields.join(' and ')}.`);
       return current;
     }
@@ -583,16 +598,27 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       log(`Added the source ZIP${withApproval ? ' and the approval notes' : ''}.`);
       if (normalized(current.approvalNotes)) needApproval = false;
     }
-    if (needNotes || needApproval) {
-      const json = { ...(needNotes ? { release_notes: { 'en-US': releaseNotes } } : {}), ...(needApproval ? { approval_notes: approvalNotes } : {}) };
-      const names = [needNotes && 'release notes', needApproval && 'approval notes'].filter(Boolean).join(' and ');
+    if (needNotes || needApproval || needCompatibility) {
+      const json = {
+        ...(needNotes ? { release_notes: { 'en-US': releaseNotes } } : {}),
+        ...(needApproval ? { approval_notes: approvalNotes } : {}),
+        ...(needCompatibility ? { compatibility } : {}),
+      };
+      const names = [needNotes && 'release notes', needApproval && 'approval notes', needCompatibility && 'compatibility'].filter(Boolean).join(' and ');
+      const compatibilityMissing = (fresh: Version) => needCompatibility && (fresh.compatibility === undefined || !compatibilityMatches(compatibility!, fresh.compatibility));
       current = await patch(
         current,
         () => ({ method: 'PATCH', path, json }),
         `the ${names}`,
-        (fresh) => (needNotes && !normalized(fresh.releaseNotes)) || (needApproval && !normalized(fresh.approvalNotes)),
+        (fresh) => (needNotes && !normalized(fresh.releaseNotes)) || (needApproval && !normalized(fresh.approvalNotes)) || compatibilityMissing(fresh),
       );
-      log(`Set the ${names}.`);
+      if (compatibilityMissing(current)) {
+        throw new ActionError(
+          `AMO answered the compatibility change on version ${version} with ${describeCompatibility(current.compatibility ?? {})}, not ${describeCompatibility(compatibility!)}.`,
+          'Check the versions exist on AMO, and that manifest.json does not set a different range.',
+        );
+      }
+      log(`Set the ${names}${needCompatibility ? ` (${describeCompatibility(current.compatibility!)})` : ''}.`);
     }
     return current;
   }
@@ -653,7 +679,7 @@ export async function publishToAmo(options: PublishOptions): Promise<PublishResu
       );
     }
     if (dryRun) {
-      const extras = [source && 'the source ZIP', releaseNotes && 'release notes', approvalNotes && 'approval notes'].filter(Boolean);
+      const extras = [source && 'the source ZIP', releaseNotes && 'release notes', approvalNotes && 'approval notes', compatibility && `compatibility ${describeCompatibility(compatibility)}`].filter(Boolean);
       log(`Dry run: version ${version} would be uploaded to the ${channel} channel and created${extras.length > 0 ? ` with ${extras.join(', ')}` : ''}. Nothing was sent to AMO.`);
       output('result', 'dry-run');
       output('state', '');

@@ -1382,3 +1382,76 @@ describe('publishToAmo: more faults', () => {
     assert.ok(run.warnings.includes('AMO will likely refuse 2.0: a listed version must be greater than the latest signed listed version (2.0.0 is public).'));
   });
 });
+
+describe('publishToAmo: compatibility', () => {
+  it('sends the compatibility in the JSON create, so no PATCH follows', async () => {
+    const run = publish('1.4.0', { compatibility: { firefox: { min: '128.0' } } });
+    await run;
+    assert.deepEqual(calls(), [...NEW_VERSION('1.4.0'), CREATE]);
+    assert.deepEqual((amo.requests.at(-1)!.json as Record<string, unknown>).compatibility, { firefox: { min: '128.0' } });
+    assert.deepEqual(created().compatibility, { firefox: { min: '128.0', max: '*' } });
+  });
+
+  it('sets the compatibility in the PATCH after a multipart create, with the release notes', async () => {
+    const run = publish('2.0.0', { channel: 'listed', source: sourceZip(), releaseNotes: 'New popup.', compatibility: ['firefox', 'android'] });
+    await run;
+    const version = created();
+    assert.deepEqual(calls(), [...NEW_VERSION('2.0.0'), CREATE, PATCH(version.id)]);
+    assert.equal(amo.requests.at(-2)!.form!.compatibility, undefined, 'AMO accepts no nested field in a multipart request');
+    assert.deepEqual(amo.requests.at(-1)!.json, { release_notes: { 'en-US': 'New popup.' }, compatibility: ['firefox', 'android'] });
+    assert.deepEqual(version.compatibility, { firefox: { min: '109.0', max: '*' }, android: { min: '120.0', max: '*' } });
+    assert.ok(run.lines.includes('Set the release notes and compatibility (firefox 109.0 to *, android 120.0 to *).'));
+  });
+
+  it('sends nothing when the version already has the compatibility asked for', async () => {
+    seed('1.4.0', { compatibility: { firefox: { min: '128.0', max: '*' } } });
+    const run = publish('1.4.0', { compatibility: { firefox: { min: '128.0' } } });
+    assert.equal((await run).result, 'skipped');
+    assert.deepEqual(writes(), []);
+  });
+
+  it('changes a different compatibility on an existing version and says what it replaced', async () => {
+    const version = seed('1.4.0', { compatibility: { firefox: { min: '109.0', max: '*' }, android: { min: '120.0', max: '*' } } });
+    const run = publish('1.4.0', { compatibility: { firefox: { min: '128.0', max: '140.*' } } });
+    await run;
+    assert.deepEqual(writes(), [PATCH(version.id)]);
+    assert.deepEqual(version.compatibility, { firefox: { min: '128.0', max: '140.*' } });
+    assert.ok(run.lines.includes('Version 1.4.0 is compatible with firefox 109.0 to *, android 120.0 to * on AMO; the compatibility input asks for firefox 128.0 to 140.*.'));
+    assert.ok(run.lines.includes('Set the compatibility (firefox 128.0 to 140.*).'));
+  });
+
+  it('reports the change on a dry run without sending it', async () => {
+    seed('1.4.0');
+    const run = publish('1.4.0', { dryRun: true, compatibility: ['firefox', 'android'] });
+    await run;
+    assert.deepEqual(writes(), []);
+    assert.ok(run.lines.some((line) => /^Dry run: a real run would send PATCH \/api\/v5\/addons\/addon\/1234\/versions\/\d+\/ with the compatibility\.$/.test(line)));
+  });
+
+  it('names the compatibility in the dry run of a new version', async () => {
+    const run = publish('1.4.0', { dryRun: true, compatibility: { firefox: { min: '128.0' } } });
+    await run;
+    assert.ok(run.lines.includes('Dry run: version 1.4.0 would be uploaded to the unlisted channel and created with compatibility firefox from 128.0. Nothing was sent to AMO.'));
+  });
+
+  it("passes on AMO's refusal of an Android range that the manifest locks", async () => {
+    const version = seed('1.4.0', { bytes: addonZip('1.4.0', { manifest: { browser_specific_settings: { gecko: { id: ADDON_ID }, gecko_android: {} } } }) });
+    version.compatibility = { firefox: { min: '109.0', max: '*' }, android: { min: '120.0', max: '*' } };
+    const error = await rejection(publish('1.4.0', { compatibility: { firefox: {}, android: { min: '142.0' } } }));
+    assert.match(text(error), /Can not override compatibility information set in the manifest for this application \(Firefox for Android\)/);
+  });
+
+  it('stops when AMO answers the PATCH with another compatibility', async () => {
+    seed('1.4.0');
+    amo.fault('version:patch', { mutate: (body) => ({ ...body, compatibility: { firefox: { min: '109.0', max: '*' } } }) });
+    const error = await rejection(publish('1.4.0', { compatibility: { firefox: { min: '128.0' } } }));
+    assert.equal(error.message, 'AMO answered the compatibility change on version 1.4.0 with firefox 109.0 to *, not firefox from 128.0.');
+  });
+
+  it('refuses a version whose compatibility AMO does not describe', async () => {
+    seed('1.4.0');
+    amo.fault('version', { mutate: (body) => ({ ...body, compatibility: null }) });
+    const error = await rejection(publish('1.4.0', { compatibility: ['firefox'] }));
+    assert.match(error.message, /with compatibility = missing, which this version of the action does not know\./);
+  });
+});

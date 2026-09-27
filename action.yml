@@ -31,6 +31,9 @@ inputs:
   approval-notes:
     description: Notes for Mozilla reviewers, such as build instructions. Only Mozilla and the add-on's authors see them.
     required: false
+  compatibility:
+    description: 'JSON: the applications and versions this version supports, such as ["firefox","android"] or {"firefox":{"min":"128.0"}}. Set on every run; omit to keep what AMO reads from manifest.json.'
+    required: false
   wait:
     description: Wait until AMO signs the version, or rejects it, before finishing.
     required: false

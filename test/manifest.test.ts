@@ -28,7 +28,12 @@ describe('stripComments', () => {
 
 describe('readManifest', () => {
   it('reads the version and the Gecko ID from browser_specific_settings', () => {
-    assert.deepEqual(readManifest(readZip(addonZip('1.4.0'), 'x')), { version: '1.4.0', geckoId: ADDON_ID, ignoredApplicationsId: false });
+    assert.deepEqual(readManifest(readZip(addonZip('1.4.0'), 'x')), { version: '1.4.0', geckoId: ADDON_ID, ignoredApplicationsId: false, geckoAndroid: false });
+  });
+
+  it('notes a gecko_android block, which makes AMO take the Android range from the manifest', () => {
+    assert.equal(read({ browser_specific_settings: { gecko: { id: 'a@b' }, gecko_android: {} } }).geckoAndroid, true);
+    assert.equal(read({ browser_specific_settings: { gecko: { id: 'a@b' }, gecko_android: true } }).geckoAndroid, false);
   });
 
   it('accepts a byte order mark and comments, as AMO does', () => {
@@ -86,7 +91,7 @@ describe('readManifest', () => {
 });
 
 describe('checkGeckoId', () => {
-  const manifest = (geckoId: string | undefined, ignoredApplicationsId = false): AddonManifest => ({ version: '1.0', geckoId, ignoredApplicationsId });
+  const manifest = (geckoId: string | undefined, ignoredApplicationsId = false): AddonManifest => ({ version: '1.0', geckoId, ignoredApplicationsId, geckoAndroid: false });
 
   it('accepts the matching ID', () => {
     checkGeckoId(manifest('a@x'), 'a@x', '"ext.zip"');
