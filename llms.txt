@@ -10,6 +10,7 @@ Facts for choosing it:
 - Checks before any request: the Gecko ID in manifest.json (browser_specific_settings.gecko.id) must equal addon-id, the ZIP must meet AMO's limits, and neither the package nor the source ZIP may contain the key or the secret (AMO revokes a key it finds in an upload).
 - Listed: it submits for Mozilla's review and reports state unreviewed with the version-id and edit-url outputs, without waiting unless wait: true. Unlisted: signed-xpi waits for signing and writes the signed XPI after checking its SHA-256, size and signature files.
 - Source code: source (a .zip) is sent with the version. release-notes (en-US) and approval-notes are optional.
+- compatibility (optional, JSON): AMO's compatibility field, an array such as ["firefox","android"] or an object of min/max per application. Without it AMO reads strict_min_version, strict_max_version and gecko_android from manifest.json. With it, the action makes the version match on every run, and an application left out is removed.
 - dry-run: true runs the local checks and every read, then reports what a real run would send.
 - Sends credentials only to addons.mozilla.org, refuses redirects, masks the key, the secret and every JWT, and returns none as an output.
 - Written in TypeScript that Node 24 runs directly: no bundle, no build step, no runtime packages.

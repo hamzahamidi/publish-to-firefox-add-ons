@@ -73,6 +73,7 @@ export interface MockVersion {
   humanReviewed: boolean;
   bytes: Buffer;
   reads: number;
+  compatibility: Record<string, { min: string; max: string }>;
 }
 
 export interface UploadResult {
@@ -164,6 +165,21 @@ const DEFAULT_CONFIG: MockConfig = {
   rejectAfterReads: undefined,
   throttle: undefined,
 };
+const DEFAULT_COMPATIBILITY: Record<string, { min: string; max: string }> = { firefox: { min: '109.0', max: '*' }, android: { min: '120.0', max: '*' } };
+const APP_VERSIONS = new Set(['*', '109.0', '115.0', '120.0', '128.0', '140.0', '140.*', '142.0']);
+
+function geckoAndroid(bytes: Buffer): boolean {
+  try {
+    return typeof JSON.parse(unzip(bytes).get('manifest.json')!.toString('utf8')).browser_specific_settings?.gecko_android === 'object';
+  } catch {
+    return false;
+  }
+}
+
+function defaultCompatibility(bytes: Buffer): Record<string, { min: string; max: string }> {
+  return { firefox: DEFAULT_COMPATIBILITY.firefox!, ...(geckoAndroid(bytes) ? { android: DEFAULT_COMPATIBILITY.android! } : {}) };
+}
+
 const SIGNATURE_FILES = ['META-INF/mozilla.rsa', 'META-INF/mozilla.sf', 'META-INF/manifest.mf'];
 const sha256 = (bytes: Buffer) => createHash('sha256').update(bytes).digest('hex');
 const notFound: Result = { status: 404, body: { detail: 'Not found.' } };
@@ -255,7 +271,7 @@ export async function startMockAmo(): Promise<MockAmo> {
         is_mozilla_signed_extension: false,
         permissions: [],
       },
-      compatibility: { firefox: { min: '109.0', max: '*' } },
+      compatibility: version.compatibility,
       license: { id: 6, slug: 'MPL-2.0' },
       reviewed: null,
     };
@@ -286,6 +302,25 @@ export async function startMockAmo(): Promise<MockAmo> {
       validation: upload.processed ? { errors: 0, warnings: 0, messages: upload.messages } : null,
       version: upload.processed ? (upload.versionOverride ?? upload.manifestVersion) : null,
     };
+  }
+
+  function compatibilityFrom(value: unknown, bytes: Buffer, current: MockVersion['compatibility']): MockVersion['compatibility'] | Result {
+    const refuse = (message: string): Result => ({ status: 400, body: { compatibility: [message] } });
+    const entries = Array.isArray(value) ? value.map((app) => [app, {}] as const) : typeof value === 'object' && value !== null ? Object.entries(value) : undefined;
+    if (!entries) return refuse('Invalid value');
+    const next: MockVersion['compatibility'] = {};
+    for (const [app, range] of entries) {
+      if (app !== 'firefox' && app !== 'android') return refuse(`Invalid app specified: ${String(app)}`);
+      const { min, max } = range as { min?: string; max?: string };
+      const known = (version: string | undefined) => version === undefined || APP_VERSIONS.has(version);
+      if (!known(min) || !known(max)) return refuse(`Unknown ${min && !known(min) ? 'min' : 'max'} app version specified`);
+      const held = current[app] ?? DEFAULT_COMPATIBILITY[app]!;
+      if (app === 'android' && geckoAndroid(bytes) && ((min && min !== held.min) || (max && max !== held.max))) {
+        return refuse('Can not override compatibility information set in the manifest for this application (Firefox for Android)');
+      }
+      next[app] = { min: min ?? held.min, max: max ?? held.max };
+    }
+    return next;
   }
 
   function readManifest(bytes: Buffer): { version: string | null; geckoId: string | undefined } {
@@ -355,7 +390,10 @@ export async function startMockAmo(): Promise<MockAmo> {
       for (const older of mock.versions) if (older.addonId === addon.id && older.channel === 'listed' && older.fileStatus === 'unreviewed') older.fileStatus = 'disabled';
     }
     const approval = form ? (mock.config.multipartApprovalNotes ? form.get('approval_notes') : null) : fields.approval_notes;
+    const compatibility = fields.compatibility === undefined ? undefined : compatibilityFrom(fields.compatibility, upload.bytes, defaultCompatibility(upload.bytes));
+    if (compatibility && 'status' in compatibility) return compatibility as Result;
     const version = mock.addVersion({
+      ...(compatibility ? { compatibility: compatibility as MockVersion['compatibility'] } : {}),
       id,
       addonId: addon.id,
       version: number,
@@ -482,6 +520,11 @@ export async function startMockAmo(): Promise<MockAmo> {
       }
       if (fields.release_notes) version.releaseNotes = { ...version.releaseNotes, ...(fields.release_notes as Record<string, string>) };
       if (typeof fields.approval_notes === 'string') version.approvalNotes = fields.approval_notes;
+      if (fields.compatibility !== undefined) {
+        const compatibility = compatibilityFrom(fields.compatibility, version.bytes, version.compatibility);
+        if ('status' in compatibility) return compatibility as Result;
+        version.compatibility = compatibility as MockVersion['compatibility'];
+      }
       return { status: 200, body: versionJson(version) };
     }
     if (staleReads.version > 0) {
@@ -628,6 +671,7 @@ export async function startMockAmo(): Promise<MockAmo> {
         deleted: false,
         humanReviewed: false,
         reads: 0,
+        compatibility: defaultCompatibility(bytes),
         ...version,
         bytes,
       };

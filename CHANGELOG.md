@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Adds the `compatibility` input: AMO's applications and versions for the version, as an array or an object of `min` and `max`. It goes in the create request, or in the PATCH that follows a multipart create with source, and a re-run changes a version whose compatibility differs.
+- Stops before any request when `compatibility` sets Firefox for Android versions that `gecko_android` in `manifest.json` already sets, since AMO refuses that change.
+
 ## 1.0.0
 
 First release.

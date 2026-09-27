@@ -273,6 +273,7 @@ describe('action', () => {
     ['source equal to zip', () => ({ zip: zipPath(), source: zipPath() }), /Input source must name a different file than zip\./],
     ['signed-xpi equal to zip', () => ({ zip: zipPath(), 'signed-xpi': zipPath() }), /Input signed-xpi must name a different file than zip and source\./],
     ['signed-xpi equal to source', () => ({ source: file('same-source.zip', sourceZip()), 'signed-xpi': join(dir, 'same-source.zip'), 'dry-run': 'true' }), /Input signed-xpi must name a different file than zip and source\./],
+    ['compatibility that is not JSON', () => ({ compatibility: 'firefox, android' }), /Input compatibility is not valid JSON\./],
   ];
   for (const [label, override, pattern] of invalid) {
     it(`stops before any request on ${label}`, async () => {
@@ -292,6 +293,14 @@ describe('action', () => {
     ['the key in the source ZIP', () => ({ source: file('leak-source.zip', sourceZip([{ name: '.env', data: `AMO_KEY=${API_KEY}` }])) }), /The API key appears in entry "\.env" of "[^"]*leak-source\.zip"/],
     ['a source ZIP with a broken CRC', () => ({ source: file('crc.zip', makeZip([{ name: 'a.ts', data: 'hello', crc: 7 }])) }), /Entry "a\.ts" of "[^"]*crc\.zip" fails its checksum\. The ZIP is damaged\./],
     ['a manifest in a folder', () => ({ zip: file('nested.zip', makeZip([{ name: 'dist/manifest.json', data: '{}' }])) }), /no manifest\.json at its root, only "dist\/manifest\.json"/],
+    [
+      'an Android range that gecko_android already sets',
+      () => ({
+        zip: file('android.zip', addonZip('1.0.0', { manifest: { browser_specific_settings: { gecko: { id: ADDON_ID }, gecko_android: { strict_min_version: '142.0' } } } })),
+        compatibility: '{"android":{"min":"120.0"}}',
+      }),
+      /has browser_specific_settings\.gecko_android, so AMO takes the Firefox for Android versions from the manifest and refuses others\./,
+    ],
     ...(['low-count', 'zip64-locator', 'shifted-cd'] as const).map((kind): [string, () => Record<string, string>, RegExp] => [
       `a ${kind} archive that hides an entry holding the secret`,
       () => ({ zip: file(`${kind}.zip`, divergentZip(kind, addonFiles('1.0.0', { files: [{ name: 'dist/config.js', data: `const s = "${API_SECRET}";`.repeat(4) }] }))) }),
@@ -308,6 +317,12 @@ describe('action', () => {
       assert.equal(run.outputs.version, undefined);
     });
   }
+
+  it('sends the compatibility input with the create', async () => {
+    const run = await runAction(baseInputs('1.0.0', { compatibility: '{"firefox":{"min":"128.0"}}' }));
+    assert.equal(run.code, 0, run.stdout);
+    assert.deepEqual((amo.requests.at(-1)!.json as Record<string, unknown>).compatibility, { firefox: { min: '128.0' } });
+  });
 
   it('accepts approval notes of exactly 3,000 characters', async () => {
     const run = await runAction(baseInputs('1.0.0', { 'dry-run': 'true', 'approval-notes': 'é'.repeat(3000) }));

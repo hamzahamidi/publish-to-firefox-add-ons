@@ -7,6 +7,7 @@ export interface AddonManifest {
   version: string;
   geckoId: string | undefined;
   ignoredApplicationsId: boolean;
+  geckoAndroid: boolean;
 }
 
 type Json = Record<string, unknown>;
@@ -76,7 +77,13 @@ export function readManifest(archive: ZipArchive): AddonManifest {
   const hasSettings = manifest.browser_specific_settings !== undefined;
   const applicationsId = geckoIdOf(manifest.applications);
   const geckoId = hasSettings ? geckoIdOf(manifest.browser_specific_settings) : applicationsId;
-  return { version: manifest.version, geckoId, ignoredApplicationsId: hasSettings && !geckoId && applicationsId !== undefined };
+  const settings = manifest.browser_specific_settings;
+  return {
+    version: manifest.version,
+    geckoId,
+    ignoredApplicationsId: hasSettings && !geckoId && applicationsId !== undefined,
+    geckoAndroid: isObject(settings) && isObject(settings.gecko_android),
+  };
 }
 
 export function checkGeckoId(manifest: AddonManifest, addonId: string, label: string): void {

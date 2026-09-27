@@ -1,3 +1,4 @@
+import { APPS, type Ranges } from './compatibility.ts';
 import { ActionError } from './errors.ts';
 
 export const CHANNELS = ['listed', 'unlisted', 'enterprise'] as const;
@@ -39,6 +40,7 @@ export interface Version {
   releaseNotes: string | undefined;
   approvalNotes: string | undefined;
   source: string | null | undefined;
+  compatibility: Ranges | undefined;
 }
 
 export interface Upload {
@@ -153,7 +155,19 @@ export function decodeVersion(body: unknown, where: Where): Version {
     releaseNotes: enUs,
     approvalNotes: read.optionalString('approval_notes'),
     source: typeof source === 'string' || source === null ? source : undefined,
+    compatibility: decodeCompatibility(read.object.compatibility),
   };
+}
+
+function decodeCompatibility(value: unknown): Ranges | undefined {
+  if (!isObject(value)) return undefined;
+  const ranges: Ranges = {};
+  for (const [app, range] of Object.entries(value)) {
+    if (!(APPS as readonly string[]).includes(app)) continue;
+    if (!isObject(range) || typeof range.min !== 'string' || typeof range.max !== 'string') return undefined;
+    ranges[app as keyof Ranges] = { min: range.min, max: range.max };
+  }
+  return ranges;
 }
 
 export function decodeUpload(body: unknown, where: Where): Upload {

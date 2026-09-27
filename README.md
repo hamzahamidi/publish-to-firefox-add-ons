@@ -12,7 +12,7 @@ Publish a new version of an existing Firefox add-on to addons.mozilla.org (AMO) 
 - **Safe to re-run.** The action looks the version number up on AMO before it uploads, so a re-run never submits a version twice, and it fills in the release notes or source code that an interrupted run left out.
 - **Checks before it writes.** The Gecko ID in `manifest.json` must match `addon-id`, the package and the source ZIP are scanned for the API key and secret, and the add-on's state and the account's author role are read before anything is uploaded.
 - **Honest about review.** Mozilla reviews listed versions, which can take a day or more. The action reports `unreviewed` and hands over the version id and its Developer Hub page instead of holding the job. For an unlisted version it can wait for signing and write the verified signed XPI.
-- **Auditable.** About 1,800 lines of TypeScript with no runtime dependencies and no build step, sending the credential to one host, addons.mozilla.org.
+- **Auditable.** About 2,000 lines of TypeScript with no runtime dependencies and no build step, sending the credential to one host, addons.mozilla.org.
 - **Source code and notes in the same run.** A source ZIP for reviewers, release notes and approval notes, each set once and never overwritten by a re-run.
 
 ## Quick start
@@ -212,6 +212,22 @@ The source ZIP and the approval notes go in the same request that creates the ve
 
 Passing `github.event.release.body` through `with:` is safe. Do not place it inside a `run:` script, where it would run as shell code.
 
+### Compatibility
+
+Without `compatibility`, AMO sets the version's applications and versions from `manifest.json`: `strict_min_version` and `strict_max_version` under `browser_specific_settings.gecko`, and Firefox for Android when `browser_specific_settings.gecko_android` is present. That covers most add-ons, and nothing more is needed.
+
+Pass `compatibility` to set what the manifest cannot, such as a maximum version for one release only, or to add or drop an application:
+
+```yaml
+          compatibility: '{"firefox":{"min":"128.0","max":"140.*"},"android":{}}'
+```
+
+The value is AMO's `compatibility` field, sent as it is. An array names the applications and lets AMO pick the versions; an object gives `min`, `max` or both for each application. The versions must be ones AMO knows, such as `128.0`, `140.*` or `*`.
+
+The input describes the whole set. An application left out is removed from the version, and the action sets the value on every run, including on a version that exists already, so a later change in the Developer Hub is replaced by the next run with this input. Without a source ZIP the value goes in the create request; with one it follows in the PATCH that sets the release notes, because AMO takes no nested field in a multipart request.
+
+When `manifest.json` has `gecko_android`, AMO takes the Firefox for Android versions from it and refuses others. The action stops before any request when `compatibility` gives `android` a `min` or `max` in that case; list `android` without bounds, or set them in the manifest.
+
 ### Trying it first
 
 Add `dry-run: true` to the step. The run checks the inputs and the package, scans for the credentials, reads the site status, the add-on, the author role, the version and the upload list, then prints what a real run would send. It sends no POST or PATCH request, so it proves that the credentials work and that the account is an author of the add-on without uploading anything. To start a dry run by hand, give the workflow a `workflow_dispatch` trigger and pick a release tag under "Use workflow from", because the environment admits only tag runs.
@@ -333,7 +349,7 @@ To wait for the review, run the same job again later with `wait: true` and a `wa
 | `publish` | none | AMO has no drafts: creating the version submits it |
 | `dry-run` | `dry-run` | Same meaning |
 | `deploy-percentage`, `rollout-only`, `skip-review`, `block-on-warnings`, `publish-type` | none | AMO has no equivalent |
-| none | `channel`, `source`, `release-notes`, `approval-notes`, `wait`, `wait-timeout`, `signed-xpi` | AMO concepts |
+| none | `channel`, `source`, `release-notes`, `approval-notes`, `compatibility`, `wait`, `wait-timeout`, `signed-xpi` | AMO concepts |
 | outputs `result`, `state`, `version` | `result`, `state`, `version` | Same names; the values are AMO's |
 | none | outputs `version-id`, `edit-url`, `signed-xpi` | Let a later step follow the version |
 
@@ -349,6 +365,7 @@ To wait for the review, run the same job again later with `wait: true` and a `wa
 | `source` | no | | Path to a `.zip` of the source code, sent with the version. It must be a different file from `zip` |
 | `release-notes` | no | | Release notes, sent as English (`en-US`) |
 | `approval-notes` | no | | Notes for Mozilla's reviewers, such as build instructions, at most 3,000 characters. Only Mozilla and the add-on's authors see them |
+| `compatibility` | no | | JSON: the applications and versions the version supports, as AMO's `compatibility` field. An array such as `["firefox","android"]`, or an object such as `{"firefox":{"min":"128.0","max":"*"},"android":{"min":"142.0"}}`. See [Compatibility](#compatibility) |
 | `wait` | no | `false` | `true` waits until AMO signs the version, or rejects it, before the step ends |
 | `signed-xpi` | no | | Unlisted only. Waits for signing, then writes the verified signed XPI to this path, creating its folders |
 | `wait-timeout` | no | 15, applied by the action | Minutes to wait, 1 to 360. Needs `wait: true` or `signed-xpi` |
@@ -397,6 +414,8 @@ Each output is written as soon as it is known. A run that fails while waiting, s
    | `source` | None, version `unreviewed` | Adds it |
    | `source` | None, version `public` | Warns: AMO refuses source after a human review, and adding it notifies Mozilla's reviewers and the other authors |
    | `source` | Present | Leaves it |
+   | `compatibility` | Same applications and the bounds given | Nothing |
+   | `compatibility` | Anything else | Sets it, in either state |
 
 9. With `wait: true` or `signed-xpi`, checks the version every 15 seconds until AMO signs or rejects it, up to `wait-timeout` minutes. With `signed-xpi`, downloads and verifies the signed file. A listed version without `wait` ends here with a link to its Developer Hub page.
 
@@ -448,8 +467,8 @@ All requests go to `https://addons.mozilla.org`. `{addon-id}` is percent-encoded
 | | | A dry run stops here | |
 | 6 | New version | `POST /api/v5/addons/upload/`, multipart with `channel` and the package as `upload` | 300 s |
 | 7 | After 6 | `GET /api/v5/addons/upload/{uuid}/` every 5 seconds, up to 10 minutes | 90 s |
-| 8 | Valid upload | `POST /api/v5/addons/addon/{id}/versions/`: JSON with `upload` and the notes, or with `source` given, multipart with `upload`, `source` and `approval_notes` | 90 s, or 300 s with `source` |
-| 9 | Notes the version lacks | `PATCH /api/v5/addons/addon/{id}/versions/{version id}/` with JSON `release_notes` and `approval_notes`, only the missing ones | 90 s |
+| 8 | Valid upload | `POST /api/v5/addons/addon/{id}/versions/`: JSON with `upload`, the notes and `compatibility`, or with `source` given, multipart with `upload`, `source` and `approval_notes` | 90 s, or 300 s with `source` |
+| 9 | Notes the version lacks, or a different compatibility | `PATCH /api/v5/addons/addon/{id}/versions/{version id}/` with JSON `release_notes`, `approval_notes` and `compatibility`, only the ones to change | 90 s |
 | 10 | Existing `unreviewed` version without source, `source` given | `PATCH .../versions/{version id}/`, multipart with `source`, and `approval_notes` when missing | 300 s |
 | 11 | Upload answer lost | The upload list again, then at most one more upload | 90 s for the list, 300 s for the repeated upload (as row 6) |
 | 12 | Create answer lost | `GET /api/v5/addons/upload/{uuid}/` and request 4 again, then at most one more create | 90 s for the reads; the repeated create as row 8 |
